@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+
+# Docker
+*.log
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Data / large files
+*.tif
+*.tiff
+*.geojson.bak
+data/raw/
+
+# Docs exports
+docs/**/*.pdf.tmp

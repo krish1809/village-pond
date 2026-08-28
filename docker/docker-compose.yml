@@ -1,0 +1,41 @@
+version: "3.9"
+
+services:
+  frontend:
+    build: ../frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000
+
+  backend:
+    build: ../backend
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - opencv-service
+    environment:
+      - DATABASE_URL=postgresql://pond_user:pond_pass@db:5432/pond_db
+      - OPENCV_SERVICE_URL=http://opencv-service:8001
+
+  opencv-service:
+    build: ../opencv-service
+    ports:
+      - "8001:8001"
+
+  db:
+    image: postgis/postgis:16-3.4
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=pond_user
+      - POSTGRES_PASSWORD=pond_pass
+      - POSTGRES_DB=pond_db
+    volumes:
+      - pond_pgdata:/var/lib/postgresql/data
+
+volumes:
+  pond_pgdata:
