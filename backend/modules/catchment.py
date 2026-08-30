@@ -236,19 +236,72 @@ def _delineate_watershed(
     return mask
 
 
+@dataclass
+class FlowResult:
+    """Flow direction and accumulation, computed once and reusable across
+    multiple pour points (they don't depend on which point is chosen)."""
+    flow_dir: np.ndarray
+    flow_acc: np.ndarray
+    notes: List[str]
+
+
+def compute_flow(dem: np.ndarray) -> FlowResult:
+    """
+    Run depression filling, D8 flow direction, and flow accumulation once.
+
+    This is independent of any particular pour point, so when evaluating
+    several candidate pond sites on the same map, call this once and reuse
+    the result rather than recomputing it per candidate.
+    """
+    notes: List[str] = []
+
+    notes.append("Filling depressions: Priority-Flood (Barnes et al., 2014)")
+    filled_dem = _priority_flood_fill(dem)
+    depressions_filled = int(np.sum(filled_dem > dem))
+    notes.append(f"Filled {depressions_filled} depressed cells")
+
+    notes.append("Computing D8 flow directions (O'Callaghan & Mark, 1984)")
+    flow_dir = _compute_flow_direction(filled_dem)
+
+    notes.append("Computing flow accumulation via topological sort")
+    flow_acc = _compute_flow_accumulation(flow_dir)
+    notes.append(f"Max flow accumulation: {flow_acc.max()} cells")
+
+    return FlowResult(flow_dir=flow_dir, flow_acc=flow_acc, notes=notes)
+
+
+def delineate_from_flow(
+    flow: FlowResult,
+    pour_row: int,
+    pour_col: int,
+) -> CatchmentResult:
+    """Watershed delineation from a pour point, reusing already-computed flow."""
+    notes: List[str] = [f"Delineating watershed from pour point ({pour_row}, {pour_col})"]
+    mask = _delineate_watershed(flow.flow_dir, pour_row, pour_col)
+    catchment_cells = int(mask.sum())
+    notes.append(f"Catchment covers {catchment_cells} grid cells")
+
+    return CatchmentResult(
+        flow_dir=flow.flow_dir,
+        flow_acc=flow.flow_acc,
+        mask=mask,
+        pour_point=(pour_row, pour_col),
+        notes=notes,
+    )
+
+
 def delineate(
     grid: GridResult,
     pour_row: int,
     pour_col: int,
 ) -> CatchmentResult:
     """
-    Full catchment delineation pipeline for a given pour point.
+    Full catchment delineation pipeline for a single pour point.
 
-    Steps:
-      1. Priority-Flood sink filling
-      2. D8 flow direction
-      3. Flow accumulation (topological sort)
-      4. Watershed delineation (reverse BFS from pour point)
+    Convenience wrapper combining compute_flow() + delineate_from_flow().
+    For evaluating multiple candidate points on the same map, call
+    compute_flow() once and pass the result to delineate_from_flow()
+    for each candidate instead of calling this repeatedly.
 
     Parameters
     ----------
@@ -261,34 +314,7 @@ def delineate(
     -------
     CatchmentResult
     """
-    notes: List[str] = []
-    dem = grid.dem
-
-    # 1. Fill depressions
-    notes.append("Filling depressions: Priority-Flood (Barnes et al., 2014)")
-    filled_dem = _priority_flood_fill(dem)
-    depressions_filled = int(np.sum(filled_dem > dem))
-    notes.append(f"Filled {depressions_filled} depressed cells")
-
-    # 2. D8 flow direction
-    notes.append("Computing D8 flow directions (O'Callaghan & Mark, 1984)")
-    flow_dir = _compute_flow_direction(filled_dem)
-
-    # 3. Flow accumulation
-    notes.append("Computing flow accumulation via topological sort")
-    flow_acc = _compute_flow_accumulation(flow_dir)
-    notes.append(f"Max flow accumulation: {flow_acc.max()} cells")
-
-    # 4. Watershed delineation
-    notes.append(f"Delineating watershed from pour point ({pour_row}, {pour_col})")
-    mask = _delineate_watershed(flow_dir, pour_row, pour_col)
-    catchment_cells = int(mask.sum())
-    notes.append(f"Catchment covers {catchment_cells} grid cells")
-
-    return CatchmentResult(
-        flow_dir=flow_dir,
-        flow_acc=flow_acc,
-        mask=mask,
-        pour_point=(pour_row, pour_col),
-        notes=notes,
-    )
+    flow = compute_flow(grid.dem)
+    result = delineate_from_flow(flow, pour_row, pour_col)
+    result.notes = flow.notes + result.notes
+    return result
