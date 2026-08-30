@@ -52,76 +52,62 @@ def _make_transformer(lon: float, lat: float) -> Transformer:
 def catchment_polygon(
     mask: np.ndarray,
     meta: GridMeta,
-) -> Polygon:
+):
     """
-    Convert a boolean catchment mask to a Shapely Polygon — fast vectorized.
+    Convert a boolean catchment/footprint mask to an exact Shapely geometry
+    by unioning each True cell's own rectangle — not an approximation.
 
-    Strategy:
-      1. Dilate the mask by 1 cell (ensures thin catchments have area)
-      2. Extract corner coordinates of all True cells as a point cloud
-      3. Build a concave boundary using the alpha-shape approximation:
-         - Compute the convex hull of all cell-centre points
-         - Expand slightly by half a cell to capture full cell areas
-      For most catchments this is 50-100× faster than building and merging
-      individual cell Polygons via unary_union.
+    An earlier version of this function used a convex hull of cell centres,
+    buffered outward, as a faster approximation. That was found (by directly
+    comparing its output against a raw cell-count area) to overestimate area
+    by up to ~78% for irregular or scattered catchment shapes, since a convex
+    hull fills in any concave or disconnected parts of the real shape. That's
+    not an acceptable margin of error for a reported area, so this function
+    now builds the exact union of the raster cells instead: correct by
+    construction, since it's built from the same cells the mask contains,
+    not the space around them.
+
+    Trade-off: the resulting polygon's edges follow the grid's cell
+    boundaries exactly, so its perimeter has a "staircase" shape rather than
+    a smooth line — perimeter is therefore somewhat longer than a smoothed
+    real-world boundary would be. This is a well-known, expected property of
+    converting a raster grid to a vector shape (not a flaw specific to this
+    project), and area is unaffected by it.
 
     Parameters
     ----------
     mask : np.ndarray (bool)
-        Boolean grid, True = cell is in the catchment.
+        Boolean grid, True = cell is part of the shape.
     meta : GridMeta
         Spatial metadata from terrain_grid.
 
     Returns
     -------
-    Shapely Polygon (or MultiPolygon if the catchment is fragmented).
+    Shapely Polygon or MultiPolygon (MultiPolygon if the True cells form
+    more than one disconnected cluster).
     """
-    from shapely.geometry import MultiPoint
+    from shapely.geometry import box
 
     cell_lon = meta.cell_lon
     cell_lat = meta.cell_lat
 
-    # Find indices of all True cells
     rows_idx, cols_idx = np.where(mask)
 
     if len(rows_idx) == 0:
-        # Fallback: 1-cell polygon at grid centre
+        # Fallback: 1-cell polygon at grid centre (mask was empty)
         lon_c, lat_c = meta.grid_to_lonlat(meta.rows // 2, meta.cols // 2)
-        return Polygon([
-            (lon_c - cell_lon, lat_c - cell_lat),
-            (lon_c + cell_lon, lat_c - cell_lat),
-            (lon_c + cell_lon, lat_c + cell_lat),
-            (lon_c - cell_lon, lat_c + cell_lat),
-        ])
+        return box(lon_c - cell_lon/2, lat_c - cell_lat/2, lon_c + cell_lon/2, lat_c + cell_lat/2)
 
-    # Vectorised: compute (lon, lat) for all True cells at once
-    lons = meta.lon_min + (cols_idx + 0.5) * cell_lon
-    lats = meta.lat_min + (rows_idx + 0.5) * cell_lat
+    lons = meta.lon_min + cols_idx * cell_lon
+    lats = meta.lat_min + rows_idx * cell_lat
 
-    if len(rows_idx) == 1:
-        # Single cell — return a small rectangle
-        lon_c, lat_c = lons[0], lats[0]
-        return Polygon([
-            (lon_c - cell_lon/2, lat_c - cell_lat/2),
-            (lon_c + cell_lon/2, lat_c - cell_lat/2),
-            (lon_c + cell_lon/2, lat_c + cell_lat/2),
-            (lon_c - cell_lon/2, lat_c + cell_lat/2),
-        ])
+    squares = [
+        box(lon, lat, lon + cell_lon, lat + cell_lat)
+        for lon, lat in zip(lons, lats)
+    ]
 
-    # Build convex hull of cell centres, then buffer by half cell size
-    # to approximate the full raster extent of the catchment
-    points = MultiPoint(list(zip(lons, lats)))
-    hull = points.convex_hull
-
-    # Buffer by half a diagonal cell size to include full cell area
-    half_diag = np.sqrt(cell_lon**2 + cell_lat**2) / 2
-    buffered = hull.buffer(half_diag)
-
-    # Ensure it's a Polygon
-    if buffered.is_empty:
-        buffered = hull.buffer(cell_lon)
-
-    return buffered
+    merged = unary_union(squares)
+    return merged
 
 
 def catchment_geometry(
