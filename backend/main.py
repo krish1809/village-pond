@@ -11,28 +11,12 @@ from api.routes.analyze_contour import router as analyze_router
 
 app = FastAPI(
     title="Village Pond Planning System API",
-    description="""
-## Phase 2 — Contour Map Catchment Analysis
-
-This API accepts contour maps (KML/KMZ) and returns:
-- **Pond location**: The best candidate site identified by multi-criteria terrain analysis
-- **Catchment boundary**: The watershed draining into that site (GeoJSON Polygon)
-- **Terrain indices**: TWI, TPI, SPI, curvature values at the identified site
-- **Contour summary**: Elevation range, interval, number of contour lines
-
-### Algorithms used
-- **Priority-Flood** depression filling (Barnes et al., 2014) — O(n log n) optimal
-- **D8** flow direction (O'Callaghan & Mark, 1984)
-- **TWI** Topographic Wetness Index (Beven & Kirkby, 1979)
-- **TPI** Topographic Position Index (Guisan et al., 1999)  
-- **SPI** Stream Power Index (Moore et al., 1991)
-- **Plan/Profile Curvature** (Zevenbergen & Thorne, 1987)
-- **Multi-criteria weighted suitability scoring**
-
-### Key constraint
-All results are computed from the uploaded file — no values are hard-coded.
-Works on any KML/KMZ contour map, not just the sample file.
-    """,
+    description=(
+        "Phase 2 — accepts a contour map (KML/KMZ), builds an elevation model "
+        "from it, and returns ranked candidate pond sites with the catchment "
+        "area draining into each one. Everything in the response is computed "
+        "from the uploaded file; nothing is hard-coded to the sample map."
+    ),
     version="0.2.0",
     contact={"name": "Village Pond Planning System"},
     license_info={"name": "MIT"},
