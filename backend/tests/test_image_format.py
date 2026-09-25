@@ -19,7 +19,7 @@ def test_format_image_returns_png():
     resp = client.post(
         "/analyzeContour",
         params={"num_candidates": 3, "format": "image"},
-        files={"file": ("contours_1m.kml", data, "application/vnd.google-earth.kml+xml")},
+        files={"contour_map": ("contours_1m.kml", data, "application/vnd.google-earth.kml+xml")},
     )
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "image/png"
@@ -32,7 +32,7 @@ def test_format_json_is_still_the_default():
     resp = client.post(
         "/analyzeContour",
         params={"num_candidates": 3},
-        files={"file": ("contours_1m.kml", data, "application/vnd.google-earth.kml+xml")},
+        files={"contour_map": ("contours_1m.kml", data, "application/vnd.google-earth.kml+xml")},
     )
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("application/json")
@@ -45,6 +45,6 @@ def test_invalid_format_value_rejected():
     resp = client.post(
         "/analyzeContour",
         params={"format": "xml"},  # not a supported value
-        files={"file": ("contours_1m.kml", data, "application/vnd.google-earth.kml+xml")},
+        files={"contour_map": ("contours_1m.kml", data, "application/vnd.google-earth.kml+xml")},
     )
     assert resp.status_code == 422
