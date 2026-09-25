@@ -57,7 +57,7 @@ fastapi, uvicorn[standard], python-multipart, lxml, numpy, scipy, shapely, pypro
 cd backend
 pip install -r requirements.txt
 uvicorn main:app --reload                    # Dev server on :8000
-curl -X POST http://localhost:8000/analyzeContour -F "file=@../contours_1m.kml"
+curl -X POST http://localhost:8000/analyzeContour -F "contour_map=@../contours_1m.kml"
 python -m pytest tests/ -v                   # Unit tests
 python tests/demo_full_pipeline.py ../contours_1m.kml  # Full demo
 ```
