@@ -43,7 +43,7 @@ router = APIRouter()
     tags=["Catchment Analysis"],
 )
 def analyze_contour(
-    file: UploadFile = File(
+    contour_map: UploadFile = File(
         ...,
         description="KML or KMZ contour map, with contour lines tagged with elevation",
     ),
@@ -67,12 +67,12 @@ def analyze_contour(
 ):
     """Analyze a contour map and return ranked candidate pond sites with catchment info."""
     t_start = time.time()
-    filename = file.filename or "uploaded_file"
+    filename = contour_map.filename or "uploaded_file"
     all_notes: List[str] = []
 
     # --- Read and parse the uploaded file ---
     try:
-        file_bytes = file.file.read()
+        file_bytes = contour_map.file.read()
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Could not read uploaded file: {exc}")
 
