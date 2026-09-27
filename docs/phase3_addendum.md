@@ -12,7 +12,7 @@ and the terrain/hydrology modules (`catchment.py`, `pond_locator.py`,
 | Concern | Phase 2 | Phase 3 |
 |---|---|---|
 | Terrain input | Uploaded KML/KMZ contour file | A bounding box drawn on a map |
-| Elevation source | Interpolated from contour lines | Fetched from the Open-Meteo elevation API |
+| Elevation source | Interpolated from contour lines | Real DEM fetched from OpenTopography (SRTMGL1 30 m) |
 | Rainfall | — | Open-Meteo historical archive (with offline fallback) |
 | Output | Pond sites + catchment + footprint | …plus **expected water volume** per site |
 | Interface | Swagger / curl | React + Leaflet web app, results overlaid on the map |
@@ -23,7 +23,7 @@ and the terrain/hydrology modules (`catchment.py`, `pond_locator.py`,
 Browser draws a rectangle → bbox
         │
         ▼
-elevation_api.fetch_dem_grid(bbox)      ── Open-Meteo /v1/elevation (batched, cached)
+elevation_api.fetch_dem_grid(bbox)      ── OpenTopography Global DEM API (AAIGrid, cached)
         │  (a GridResult, identical in shape to the contour-derived one)
         ▼
 catchment.compute_flow(dem)             ← reused from Phase 2
@@ -71,27 +71,27 @@ be reached the module returns a documented fallback value and flags the source a
 `"fallback"`, so the analysis never hard-fails offline. A monthly climatology is
 returned for the small rainfall chart in the UI.
 
-## 5. Working within a free, rate-limited elevation service
+## 5. Elevation via OpenTopography (one request per block)
 
-The Open-Meteo elevation endpoint is free but limited to 600 weighted calls per
-minute, and a 100-coordinate request is weighted roughly per coordinate. The
-design keeps a single analysis inside that budget by separating two grids:
+The DEM comes from the **OpenTopography Global DEM API** (SRTMGL1, 30 m). This is
+a better fit than a per-coordinate elevation service: **one request returns the
+whole raster** for the selected block, so an analysis is a single call — no
+per-coordinate rate-limit starvation. Practical points:
 
-- **Sampling grid (≤500 points)** — what we actually query. One run stays under the
-  minute limit. At village scale this is near the DEM's own 90 m resolution, so
-  little real detail is lost.
-- **Analysis grid (finer)** — the fetched samples are interpolated (linear, then
-  nearest-fill — the same scheme `terrain_grid` uses between contour vertices) onto
-  a finer grid (~70 cells on the long axis) that the hydrology runs on. This keeps
-  flow routing, catchment delineation, and the pond footprint from being distorted
-  by a blocky ~20×20 raster, without adding real detail beyond the source data or
-  making a single extra API call.
-- **Batching + bounded concurrency** — coordinates are sent in ≤100-point batches,
-  a couple of requests at a time, with retry-and-backoff on transient 429/5xx.
-- **In-memory caching** — fetched DEM grids (by bbox) and rainfall (by centre) are
-  cached, so re-analysing the same or an adjusted area is instant and free.
-- **Graceful degradation** — if the service is momentarily throttled, the API
-  returns a clear message telling the user to wait a minute or pick a smaller area.
+- **ASCII grid output** — we request `outputFormat=AAIGrid` (ESRI ASCII raster)
+  and parse it with numpy, so **no GDAL/rasterio** is needed (the lab containers
+  don't have them).
+- **API key** — OpenTopography requires a free key, read from the
+  `OPENTOPOGRAPHY_API_KEY` environment variable (kept out of the repo, loaded from
+  a `.env` on the systems).
+- **Downsampling cap** — if a block's native raster exceeds ~220 cells on the long
+  axis, it's stride-downsampled, keeping flow routing fast and memory modest on the
+  512 MB containers.
+- **In-memory caching** — fetched DEMs (by bbox) and rainfall (by centre) are
+  cached, so re-analysing the same block is instant.
+- **Contours for display** — `contour_lines.py` generates elevation contours from
+  the DEM (via contourpy, so without importing all of matplotlib) and returns them
+  as polylines the front-end draws under the pond/catchment, like a topographic map.
 
 ## 6. Front-end (`frontend/`, React + Leaflet)
 
