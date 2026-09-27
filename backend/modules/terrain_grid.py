@@ -68,18 +68,27 @@ class GridResult:
     notes: List[str]
 
 
-def _compute_slope(dem: np.ndarray, cell_size_m: float) -> np.ndarray:
+def compute_slope(dem: np.ndarray, cell_size_m: float) -> np.ndarray:
     """
     Compute slope in degrees using the 3×3 Horn (1981) algorithm.
     Widely used in GIS/hydrology as the standard finite-difference gradient.
 
     Reference: Horn, B.K.P. (1981). Hill shading and the reflectance map.
                Proceedings of the IEEE, 69(1), 14-47.
+
+    Public so other terrain sources (e.g. a DEM fetched from an elevation
+    API in modules/elevation_api.py) can reuse the exact same slope maths
+    instead of duplicating it.
     """
     # Use numpy gradient for clean implementation
     dy, dx = np.gradient(dem, cell_size_m, cell_size_m)
     slope_rad = np.arctan(np.sqrt(dx**2 + dy**2))
     return np.degrees(slope_rad)
+
+
+# Backwards-compatible private alias (older imports referenced the leading
+# underscore name before it was promoted to public).
+_compute_slope = compute_slope
 
 
 def build_grid(
@@ -186,7 +195,7 @@ def build_grid(
     # --- Step 6: Compute slope ---
     # Approximate cell size in metres (1° lat ≈ 111 km)
     cell_m = min(cell_lon, cell_lat) * 111_000
-    slope_grid = _compute_slope(dem_grid, cell_m)
+    slope_grid = compute_slope(dem_grid, cell_m)
 
     notes.append(f"Slope range: {slope_grid.min():.2f}° – {slope_grid.max():.2f}°")
 

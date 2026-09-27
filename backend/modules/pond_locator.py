@@ -150,6 +150,7 @@ def find_candidates(
     flow_acc: np.ndarray,
     num_candidates: int = 3,
     boundary_margin: float = 0.1,
+    reject_unbounded_footprint: bool = True,
 ) -> List[PondCandidate]:
     """
     Rank the top `num_candidates` distinct pond sites on the map.
@@ -165,6 +166,17 @@ def find_candidates(
     boundary_margin : float
         Fraction of the grid to exclude from edges, to avoid picking a
         site right at the boundary of the analysed area.
+    reject_unbounded_footprint : bool
+        When True (default), a candidate whose flood-fill footprint can't be
+        bounded within the growth cap is rejected and the search moves on —
+        this is the strict behaviour that avoids recommending a pond on broad,
+        flat floodplain-like ground. When False, such candidates are still
+        accepted (with their footprint flagged `capped`) instead of being
+        dropped. The lenient mode exists for coarse DEMs of gently sloping
+        terrain, where a genuinely bounded basin may not be resolvable at the
+        grid's resolution and strict mode would otherwise reject everything;
+        the caller can then present the best-scoring sites with the flat-ground
+        caveat rather than returning nothing at all.
 
     Returns
     -------
@@ -250,7 +262,7 @@ def find_candidates(
 
             footprint_mask, footprint_info = compute_pond_footprint(dem, best_row, best_col)
 
-            if footprint_info["capped"]:
+            if reject_unbounded_footprint and footprint_info["capped"]:
                 # This cell can't form a bounded pond — reject it and its
                 # immediate neighbourhood, then keep searching for this
                 # same rank rather than accepting an unbounded site.

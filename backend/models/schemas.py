@@ -154,3 +154,109 @@ class AnalyzeContourResponse(BaseModel):
             ]
         }
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — area-based analysis (select a region on a map, fetch a DEM for it,
+# and report suggested pond, catchment, and expected water volume).
+# Defined after the base models above so all referenced types already exist.
+# ---------------------------------------------------------------------------
+
+
+class WaterVolume(BaseModel):
+    """Estimated water volumes for a candidate site.
+
+    Two independent limits are reported plus their minimum: the catchment can
+    only deliver so much runoff per year, and the basin can only hold so much —
+    the collectable volume is bounded by whichever is smaller.
+    """
+
+    annual_runoff_m3: float = Field(
+        ..., description="Water the catchment delivers per year (C x rainfall x catchment area)"
+    )
+    storage_capacity_m3: float = Field(
+        ..., description="Volume the pond basin can physically hold below the assumed water level"
+    )
+    expected_collectable_m3: float = Field(
+        ..., description="Realistically collectable volume = min(annual runoff, storage capacity)"
+    )
+    limiting_factor: str = Field(
+        ..., description="Which limit binds: 'catchment_runoff' or 'basin_capacity'"
+    )
+    runoff_coefficient: float = Field(..., description="Runoff coefficient C used in the estimate")
+    annual_rainfall_mm: float = Field(..., description="Mean annual rainfall used, in millimetres")
+
+
+class RainfallInfo(BaseModel):
+    """Rainfall context used for the volume estimate."""
+
+    annual_rainfall_mm: float = Field(..., description="Mean annual rainfall (mm)")
+    source: str = Field(..., description="'open-meteo' (live) or 'fallback' (offline default)")
+    years_averaged: int = Field(..., description="Number of years averaged (0 if fallback)")
+    monthly_climatology_mm: List[float] = Field(
+        default_factory=list, description="Mean rainfall per month Jan..Dec (mm), for charting"
+    )
+
+
+class AreaSummary(BaseModel):
+    """Summary of the selected area and the DEM built for it."""
+
+    bbox: List[float] = Field(..., description="Selected bounding box [min_lon, min_lat, max_lon, max_lat]")
+    center_lat: float
+    center_lon: float
+    grid_resolution: str = Field(..., description="DEM grid shape, e.g. '50x40'")
+    elevation_min_m: float
+    elevation_max_m: float
+
+
+class AreaCandidateResult(BaseModel):
+    """One ranked candidate for the area-based analysis: everything the contour
+    result carries, plus the water-volume estimate."""
+
+    rank: int = Field(..., description="1 = best candidate, 2 = second best, etc.")
+    location: PondLocation
+    pond_footprint: PondFootprint
+    catchment: CatchmentInfo
+    suitability: SuitabilityFactors
+    water_volume: WaterVolume
+
+
+class AnalyzeAreaRequest(BaseModel):
+    """Request body for /analyzeArea."""
+
+    bbox: List[float] = Field(
+        ...,
+        description="Bounding box of the selected area: [min_lon, min_lat, max_lon, max_lat]",
+        min_length=4,
+        max_length=4,
+    )
+    grid_size: int = Field(
+        default=70, ge=40, le=120,
+        description="Analysis grid resolution (cells along the longer axis). The DEM is "
+                    "sampled coarsely from the API to respect its rate limit, then "
+                    "interpolated onto this finer grid for the hydrology.",
+    )
+    num_candidates: int = Field(
+        default=3, ge=1, le=10, description="How many ranked candidate sites to return."
+    )
+    runoff_coefficient: Optional[float] = Field(
+        default=None, gt=0, le=1,
+        description="Fraction of rainfall becoming runoff (default ~0.3 if omitted).",
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [{"bbox": [81.28, 21.24, 81.31, 21.26], "grid_size": 50, "num_candidates": 3}]
+        }
+    }
+
+
+class AnalyzeAreaResponse(BaseModel):
+    """Complete response from the /analyzeArea endpoint."""
+
+    candidates: List[AreaCandidateResult] = Field(
+        ..., description="Ranked candidate pond sites, best first"
+    )
+    rainfall: RainfallInfo
+    area_summary: AreaSummary
+    metadata: AnalysisMetadata

@@ -1,0 +1,27 @@
+// Small formatting helpers shared by the panel and map popups.
+
+// Per-rank colours, matching the palette used by the backend's PNG renderer so
+// the web overlay and the rendered report image tell the same visual story.
+export const RANK_COLORS = ['#0033cc', '#009933', '#cc6600', '#aa00aa', '#00aaaa']
+
+export function rankColor(rank) {
+  return RANK_COLORS[(rank - 1) % RANK_COLORS.length]
+}
+
+// Area: show m² up to a hectare, then hectares.
+export function formatArea(m2) {
+  if (m2 == null) return '—'
+  if (m2 >= 10000) return `${(m2 / 10000).toFixed(2)} ha (${Math.round(m2).toLocaleString()} m²)`
+  return `${Math.round(m2).toLocaleString()} m²`
+}
+
+// Volume: m³ up to a million, then million-m³ (Mm³).
+export function formatVolume(m3) {
+  if (m3 == null) return '—'
+  if (m3 >= 1e6) return `${(m3 / 1e6).toFixed(2)} million m³`
+  return `${Math.round(m3).toLocaleString()} m³`
+}
+
+export function formatCoord(lat, lon) {
+  return `${lat.toFixed(5)}, ${lon.toFixed(5)}`
+}
