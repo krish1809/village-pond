@@ -171,6 +171,19 @@ body {
 .swatch.fill { background: rgba(37, 99, 235, 0.5); border: 2px solid #2563eb; }
 .swatch.dash { border: 2px dashed #2563eb; }
 .swatch.dot { width: 14px; height: 14px; border-radius: 50%; background: #2563eb; border: 2px solid #fff; box-shadow: 0 0 0 1px #2563eb; }
+.swatch.water { background: rgba(30, 111, 214, 0.4); border: 1px solid #1e6fd6; }
+
+/* --- Downloads --- */
+.download-row { display: flex; gap: 8px; }
+.download-row .btn { flex: 1; padding: 9px 6px; font-size: 13px; }
+
+/* --- Storage curve chart --- */
+.storage-chart { width: 100%; height: auto; margin: 4px 0 2px; }
+.storage-chart .axis { stroke: #cbd5e1; stroke-width: 1; }
+.storage-chart .ref-line { stroke: #ef4444; stroke-width: 1; stroke-dasharray: 3 3; }
+.storage-chart .chart-label { font-size: 8px; fill: #ef4444; font-weight: 600; }
+.storage-chart .axis-label { font-size: 8px; fill: var(--muted); }
+.chart-caption { margin: 10px 0 2px; }
 
 /* --- Responsive: stack on narrow screens --- */
 @media (max-width: 780px) {

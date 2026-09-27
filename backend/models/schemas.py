@@ -212,9 +212,29 @@ class AreaSummary(BaseModel):
     )
 
 
+class StoragePoint(BaseModel):
+    """One point on the pond's stage–area–volume curve."""
+
+    depth_m: float = Field(..., description="Water depth above the site (metres)")
+    area_sq_m: float = Field(..., description="Flooded surface area at this depth (m²)")
+    volume_m3: float = Field(..., description="Stored water volume at this depth (m³)")
+
+
+class StorageInfo(BaseModel):
+    """How the pond's storage grows with depth, and the depth needed for a year's runoff."""
+
+    required_depth_m: float = Field(
+        ..., description="Depth needed to hold one year's runoff (capped at the max modelled depth)"
+    )
+    holds_annual_runoff: bool = Field(
+        ..., description="True if that year's runoff fits within the modelled depth range"
+    )
+    curve: List[StoragePoint] = Field(default_factory=list, description="Stage–area–volume curve")
+
+
 class AreaCandidateResult(BaseModel):
     """One ranked candidate for the area-based analysis: everything the contour
-    result carries, plus the water-volume estimate."""
+    result carries, plus the water-volume estimate and storage curve."""
 
     rank: int = Field(..., description="1 = best candidate, 2 = second best, etc.")
     location: PondLocation
@@ -222,6 +242,7 @@ class AreaCandidateResult(BaseModel):
     catchment: CatchmentInfo
     suitability: SuitabilityFactors
     water_volume: WaterVolume
+    storage: StorageInfo
 
 
 class AnalyzeAreaRequest(BaseModel):
@@ -263,6 +284,10 @@ class AnalyzeAreaResponse(BaseModel):
     )
     contours: List[ContourFeature] = Field(
         default_factory=list, description="Elevation contour lines generated from the DEM, for map display"
+    )
+    drainage: Optional[dict] = Field(
+        default=None,
+        description="GeoJSON MultiPolygon of the existing drainage/river network excluded from pond siting",
     )
     rainfall: RainfallInfo
     area_summary: AreaSummary

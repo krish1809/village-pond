@@ -204,3 +204,44 @@ def polygon_to_geojson(poly) -> Dict:
     coordinates = [exterior] + holes
 
     return {"type": "Polygon", "coordinates": coordinates}
+
+
+def smooth_polygon(geom, cell_deg: float):
+    """
+    Round off the raster "staircase" edges of a cell-union polygon so it reads as
+    a natural pond/area boundary instead of blocky pixels.
+
+    Method: a morphological *closing then opening* via buffer out-and-in with round
+    joins, followed by a light simplify. This is display-only — the reported area
+    is still measured on the exact cell-union polygon, so smoothing never changes
+    the numbers, only how the boundary looks.
+    """
+    if geom is None or geom.is_empty:
+        return geom
+    d = cell_deg * 0.75
+    try:
+        smoothed = geom.buffer(d, join_style=1, cap_style=1).buffer(-d, join_style=1, cap_style=1)
+        if smoothed.is_empty:
+            return geom
+        smoothed = smoothed.simplify(cell_deg * 0.25)
+        return smoothed if not smoothed.is_empty else geom
+    except Exception:
+        return geom
+
+
+def multipolygon_to_geojson(geom) -> Dict:
+    """
+    Convert a Shapely Polygon/MultiPolygon to a GeoJSON MultiPolygon keeping ALL
+    pieces (unlike polygon_to_geojson, which returns only the largest). Used for
+    the drainage network, which is many disconnected channel fragments.
+    """
+    polys = list(geom.geoms) if isinstance(geom, MultiPolygon) else [geom]
+    coordinates = []
+    for p in polys:
+        if p.is_empty:
+            continue
+        rings = [[[lon, lat] for lon, lat in p.exterior.coords]]
+        for hole in p.interiors:
+            rings.append([[lon, lat] for lon, lat in hole.coords])
+        coordinates.append(rings)
+    return {"type": "MultiPolygon", "coordinates": coordinates}

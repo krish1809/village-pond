@@ -38,8 +38,9 @@ All three are returned so the trade-off is visible, not hidden behind one
 number.
 """
 
+from collections import deque
 from dataclasses import dataclass, field
-from typing import List
+from typing import Dict, List, Tuple
 
 import numpy as np
 
@@ -130,3 +131,77 @@ def compute(
         limiting_factor=limiting,
         notes=notes,
     )
+
+
+_NEIGHBOURS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+
+
+def _flood_at_level(
+    dem: np.ndarray, row: int, col: int, level: float, allowed: np.ndarray
+) -> np.ndarray:
+    """
+    Connected flood-fill from (row, col) covering cells at or below `level`, but
+    only within `allowed` (the catchment) — so the pond never grows outside the
+    land that drains into it. Returns a boolean mask.
+    """
+    rows, cols = dem.shape
+    mask = np.zeros((rows, cols), dtype=bool)
+    if not allowed[row, col] or dem[row, col] > level:
+        return mask
+    mask[row, col] = True
+    q = deque([(row, col)])
+    while q:
+        r, c = q.popleft()
+        for dr, dc in _NEIGHBOURS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < rows and 0 <= nc < cols and not mask[nr, nc]:
+                if allowed[nr, nc] and dem[nr, nc] <= level:
+                    mask[nr, nc] = True
+                    q.append((nr, nc))
+    return mask
+
+
+def storage_curve(
+    dem: np.ndarray,
+    row: int,
+    col: int,
+    catchment_mask: np.ndarray,
+    cell_area_m2: float,
+    annual_runoff_m3: float,
+    max_depth_m: float = 4.0,
+    steps: int = 8,
+) -> Tuple[float, bool, List[Dict]]:
+    """
+    Build the pond's stage–area–volume ("storage") curve and the depth required to
+    hold one year's runoff.
+
+    For a series of water depths above the site, flood-fill the basin (bounded to
+    the catchment) and record the flooded area and the stored volume. Then find the
+    smallest depth whose volume reaches the annual runoff — the depth you'd need to
+    excavate/dam for the pond to capture a typical year's inflow.
+
+    Returns (required_depth_m, holds_annual_runoff, curve) where curve is a list of
+    {"depth_m", "area_sq_m", "volume_m3"}.
+    """
+    site_elev = float(dem[row, col])
+    curve: List[Dict] = []
+    required: float = None
+
+    for d in np.linspace(max_depth_m / steps, max_depth_m, steps):
+        level = site_elev + d
+        mask = _flood_at_level(dem, row, col, level, catchment_mask)
+        depths = (level - dem[mask]).clip(min=0.0)
+        area = float(mask.sum()) * cell_area_m2
+        volume = float(depths.sum()) * cell_area_m2
+        curve.append({
+            "depth_m": round(float(d), 2),
+            "area_sq_m": round(area, 1),
+            "volume_m3": round(volume, 1),
+        })
+        if required is None and volume >= annual_runoff_m3 > 0:
+            required = round(float(d), 2)
+
+    holds = required is not None
+    if required is None:
+        required = round(float(max_depth_m), 2)  # can't hold a full year within max depth
+    return required, holds, curve
