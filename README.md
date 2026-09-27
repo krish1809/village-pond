@@ -48,19 +48,21 @@ docker/           docker-compose.yml and per-service Dockerfiles
 
 ## How it works (Phase 3)
 
-1. Open the web app and **draw a rectangle** over any area on the map.
-2. The backend fetches an elevation model for that area from the **Open-Meteo
-   elevation API** and runs the terrain/hydrology pipeline (depression filling →
-   D8 flow direction → flow accumulation → TWI/TPI pond siting → catchment
-   delineation → UTM geometry) — the same pipeline used for uploaded contour maps.
+1. Open the web app (plain map, with a satellite toggle) and **select a block**
+   over any area — either "Use current map view" or draw a rectangle.
+2. The backend fetches a **real DEM for exactly that block from OpenTopography**
+   (SRTMGL1, 30 m) and runs the terrain/hydrology pipeline (depression filling →
+   D8 flow direction → flow accumulation → TWI/TPI pond siting → **river/channel
+   exclusion** → catchment delineation → UTM geometry) — the same pipeline used
+   for uploaded contour maps, so suggested ponds stay out of the drainage network.
 3. It pulls **historical rainfall** for the area from Open-Meteo and estimates,
    for each suggested pond: the **catchment area**, the **pond footprint**, and
    the **water volume** it can collect (annual runoff vs. basin capacity).
-4. The suggested pond, its catchment, and the volume figures are **overlaid on
-   the map**.
+4. Contour lines generated from the DEM, the suggested pond, its catchment, and
+   the volume figures are all **overlaid on the map**.
 
 ### Endpoints
-- `POST /analyzeArea` — body `{ "bbox": [min_lon, min_lat, max_lon, max_lat], "grid_size"?, "num_candidates"?, "runoff_coefficient"? }`. Phase 3.
+- `POST /analyzeArea` — body `{ "bbox": [min_lon, min_lat, max_lon, max_lat], "num_candidates"?, "runoff_coefficient"? }`. Phase 3. Needs `OPENTOPOGRAPHY_API_KEY` set in the environment.
 - `POST /analyzeContour` — upload a KML/KMZ contour map (`contour_map` field). Phase 2, unchanged.
 - Swagger docs at `/docs`, health at `/health`.
 
@@ -89,21 +91,21 @@ Run the tests:
 cd backend && python -m pytest tests/ -v
 ```
 
-## Elevation data (hybrid, so the demo never depends on a flaky API)
-The free Open-Meteo elevation tier has a hard daily request limit that a live
-demo can exhaust. So the DEM source is hybrid:
+## Elevation data (OpenTopography)
+The DEM for the selected block comes from the **OpenTopography Global DEM API**
+(SRTMGL1, 30 m). One request returns the whole raster for the block (requested as
+an ESRI ASCII grid, so no GDAL/rasterio is needed), which is parsed into the DEM
+the pipeline runs on. It needs a **free API key** — register at
+https://portal.opentopography.org/ and set it in the environment:
 
-- **Inside the bundled contour map's coverage** (the sample area), the DEM is
-  built straight from `contours_1m.kml` — fully offline, ~1.5 s, no API, no rate
-  limit. This is the reliable place to demo; the web app opens here and has a
-  "Go to sample area" button.
-- **Outside that coverage** (anywhere else on Earth), it falls back to the
-  Open-Meteo elevation API (samples ≤500 points, interpolated to a finer grid;
-  batched, cached, 429-resilient).
+```bash
+export OPENTOPOGRAPHY_API_KEY=your_key_here   # or put it in a .env file (gitignored)
+```
 
-The response's `area_summary.dem_source` says which was used. Rainfall comes from
-Open-Meteo's historical archive with an offline fallback, so volume figures are
-always produced.
+On the lab systems the key lives in `village-pond/.env`, which `scripts/deploy_on_system.sh`
+loads automatically. Rainfall comes from Open-Meteo's historical archive with an
+offline fallback, so volume figures are always produced. Fetched DEMs and rainfall
+are cached in memory, so re-analysing the same block is instant.
 
 ## Author
 Solo project — Rishi Kharya
