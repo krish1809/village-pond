@@ -3,9 +3,25 @@ import MapView from './MapView.jsx'
 import ResultsPanel from './ResultsPanel.jsx'
 import { analyzeArea } from './api.js'
 
+// Selection size limits (must match the backend's MIN/MAX_BBOX_SPAN_DEG).
+const MIN_SPAN_DEG = 0.002
+const MAX_SPAN_DEG = 0.6
+
+function bboxSize(bbox) {
+  const [w, s, e, n] = bbox
+  const latMid = (s + n) / 2
+  const widthKm = (e - w) * 111.32 * Math.cos((latMid * Math.PI) / 180)
+  const heightKm = (n - s) * 111.32
+  const inRange =
+    e - w >= MIN_SPAN_DEG && n - s >= MIN_SPAN_DEG && e - w <= MAX_SPAN_DEG && n - s <= MAX_SPAN_DEG
+  const tooBig = e - w > MAX_SPAN_DEG || n - s > MAX_SPAN_DEG
+  return { widthKm, heightKm, inRange, tooBig }
+}
+
 export default function App() {
   const [bbox, setBbox] = useState(null)
   const [drawToken, setDrawToken] = useState(0)
+  const [captureToken, setCaptureToken] = useState(0)
   const [results, setResults] = useState(null)
   const [selectedRank, setSelectedRank] = useState(1)
   const [loading, setLoading] = useState(false)
@@ -13,6 +29,13 @@ export default function App() {
 
   const [gridSize, setGridSize] = useState(70)
   const [numCandidates, setNumCandidates] = useState(3)
+
+  function captureView() {
+    setError(null)
+    setResults(null)
+    setBbox(null)
+    setCaptureToken((t) => t + 1)
+  }
 
   function startDrawing() {
     setError(null)
@@ -54,16 +77,24 @@ export default function App() {
           <section className="card controls">
             <h3>1 · Select a land area</h3>
             <p className="muted small">
-              Click below, then drag a rectangle on the map over the terrain you want to assess.
+              Pan and zoom the map to frame the terrain you want (aim for a village-sized patch,
+              ~1–3 km across), then click the button below — it selects what’s in view. No dragging needed.
             </p>
-            <button className="btn primary" onClick={startDrawing}>
-              {bbox ? 'Redraw area' : 'Select area on map'}
+            <button className="btn primary" onClick={captureView}>
+              Use current map view
             </button>
-            {bbox && (
-              <p className="muted small bbox-line">
-                Selected: {bbox[1].toFixed(4)}, {bbox[0].toFixed(4)} → {bbox[3].toFixed(4)}, {bbox[2].toFixed(4)}
-              </p>
-            )}
+            <p className="muted small or-line">
+              or <button className="linklike" onClick={startDrawing}>draw a rectangle by dragging</button>
+            </p>
+            {bbox && (() => {
+              const sz = bboxSize(bbox)
+              return (
+                <p className={`bbox-line small ${sz.inRange ? 'ok' : 'warn'}`}>
+                  Selected: {sz.widthKm.toFixed(1)} × {sz.heightKm.toFixed(1)} km{' '}
+                  {sz.inRange ? '✓' : sz.tooBig ? '— too large, zoom in' : '— too small, zoom out'}
+                </p>
+              )
+            })()}
 
             <h3 className="mt">2 · Options</h3>
             <label className="field">
@@ -84,7 +115,11 @@ export default function App() {
             </label>
 
             <h3 className="mt">3 · Analyse</h3>
-            <button className="btn accent" onClick={runAnalysis} disabled={!bbox || loading}>
+            <button
+              className="btn accent"
+              onClick={runAnalysis}
+              disabled={!bbox || loading || (bbox && !bboxSize(bbox).inRange)}
+            >
               {loading ? 'Analysing…' : 'Analyse selected area'}
             </button>
             {loading && (
@@ -122,6 +157,7 @@ export default function App() {
             onSelectRank={setSelectedRank}
             onBboxDrawn={setBbox}
             drawToken={drawToken}
+            captureToken={captureToken}
           />
         </main>
       </div>
