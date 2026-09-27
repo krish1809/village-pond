@@ -34,11 +34,26 @@ watercourse.
 
 (point at contours, blue drainage, then the pond markers)
 
-Each pond is a filled shape with its area, and the dashed outline is its catchment —
-the land that feeds it. On the right I get the numbers for each site: the catchment
-area, the pond footprint, the yearly runoff, and the key figure — the water it can
-collect in a year. This chart shows the depth the pond needs to hold a full year's
-runoff, and below it is the area's monthly rainfall.
+The sites are ranked best-first by a suitability score that combines the topographic
+wetness and position indices. So Rank 1 here has a catchment of about six thousand
+two hundred square metres feeding a pond footprint of roughly two thousand six
+hundred, and it can collect around nineteen hundred cubic metres of water a year.
+Rank 2 and Rank 3 are smaller — around eight hundred cubic metres each — on smaller
+catchments.
+
+(read the actual on-screen numbers for your run; point at Rank 1, 2, 3 in the panel)
+
+Each pond is a filled shape labelled with its area, and the dashed outline is its
+catchment — the land that feeds it. One thing worth pointing out: the catchment is
+always at least as large as the pond, because the pond can only sit in the low part
+of the land that drains into it.
+
+That water-volume figure comes from two limits — how much runoff the catchment
+delivers in a year, which is the runoff coefficient times the rainfall times the
+catchment area, and how much the basin can physically hold, measured from the
+terrain. The collectable volume is the smaller of the two. This chart then shows the
+depth the pond would need to hold a full year's runoff, and below it is the area's
+monthly rainfall.
 
 (scroll the side panel; point at the storage curve and rainfall chart)
 
