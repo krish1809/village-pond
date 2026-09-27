@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import MapView from './MapView.jsx'
 import ResultsPanel from './ResultsPanel.jsx'
+import Search from './Search.jsx'
 import { analyzeArea } from './api.js'
 
 // Selection size limits (must match the backend's MIN/MAX_BBOX_SPAN_DEG).
@@ -30,10 +31,17 @@ export default function App() {
 
   const [numCandidates, setNumCandidates] = useState(3)
   const [drawing, setDrawing] = useState(false)
+  const [flyTarget, setFlyTarget] = useState(null)
+  const [flyToken, setFlyToken] = useState(0)
 
   function handleBbox(b) {
     setBbox(b)
     setDrawing(false)
+  }
+
+  function flyToPlace(lat, lon) {
+    setFlyTarget([lat, lon])
+    setFlyToken((t) => t + 1)
   }
 
   function captureView() {
@@ -83,16 +91,18 @@ export default function App() {
       <div className="layout">
         <aside className="sidebar">
           <section className="card controls">
-            <h3>1 · Select a land area</h3>
-            <p className="muted small">
-              Pan and zoom the map to frame the terrain you want (aim for a village-sized patch,
-              ~1–3 km across), then click the button below — it selects what’s in view. No dragging needed.
+            <h3>1 · Find a place</h3>
+            <Search onPick={flyToPlace} />
+            <p className="muted small or-line">
+              or <button className="linklike" onClick={() => setJumpToken((t) => t + 1)}>go to the sample area</button>
             </p>
-            <button className="btn ghost" onClick={() => setJumpToken((t) => t + 1)}>
-              ⤺ Go to sample area
-            </button>
-            <button className="btn primary mt-sm" onClick={captureView}>
-              Use current map view
+
+            <h3 className="mt">2 · Select the land</h3>
+            <p className="muted small">
+              Pan/zoom to frame a village-sized patch (~1–3 km across), then:
+            </p>
+            <button className="btn primary big" onClick={captureView}>
+              ◻ Select this area
             </button>
             <p className="muted small or-line">
               or <button className="linklike" onClick={startDrawing}>draw by clicking two corners</button>
@@ -112,7 +122,7 @@ export default function App() {
               )
             })()}
 
-            <h3 className="mt">2 · Options</h3>
+            <h3 className="mt">3 · Options</h3>
             <label className="field">
               <span>Candidate sites: {numCandidates}</span>
               <input
@@ -122,7 +132,7 @@ export default function App() {
               />
             </label>
 
-            <h3 className="mt">3 · Analyse</h3>
+            <h3 className="mt">4 · Analyse</h3>
             <button
               className="btn accent"
               onClick={runAnalysis}
@@ -167,6 +177,8 @@ export default function App() {
             drawToken={drawToken}
             captureToken={captureToken}
             jumpToken={jumpToken}
+            flyTarget={flyTarget}
+            flyToken={flyToken}
           />
         </main>
       </div>
