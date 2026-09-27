@@ -2,8 +2,8 @@
 // app in production, so these are same-origin calls; in development Vite proxies
 // them to the backend (see vite.config.js).
 
-export async function analyzeArea({ bbox, gridSize, numCandidates, runoffCoefficient }) {
-  const body = { bbox, grid_size: gridSize, num_candidates: numCandidates }
+export async function analyzeArea({ bbox, numCandidates, runoffCoefficient }) {
+  const body = { bbox, num_candidates: numCandidates }
   if (runoffCoefficient != null) body.runoff_coefficient = runoffCoefficient
 
   const resp = await fetch('/analyzeArea', {

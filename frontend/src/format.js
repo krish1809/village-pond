@@ -25,3 +25,10 @@ export function formatVolume(m3) {
 export function formatCoord(lat, lon) {
   return `${lat.toFixed(5)}, ${lon.toFixed(5)}`
 }
+
+// Colour a contour line by elevation: green (low) → brown (high), like a topo map.
+export function elevationColor(e, lo, hi) {
+  const t = hi > lo ? Math.max(0, Math.min(1, (e - lo) / (hi - lo))) : 0.5
+  const hue = 95 - t * 75 // ~95 (green) at the low end → ~20 (brown) at the high end
+  return `hsl(${hue.toFixed(0)}, 45%, 42%)`
+}

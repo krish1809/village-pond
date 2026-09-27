@@ -24,6 +24,7 @@ from models.schemas import (
     AreaCandidateResult,
     AreaSummary,
     CatchmentInfo,
+    ContourFeature,
     GeoJSONPolygon,
     PondFootprint,
     PondLocation,
@@ -33,9 +34,9 @@ from models.schemas import (
 )
 from modules import (
     catchment,
+    contour_lines,
     elevation_api,
     geometry_utils,
-    local_dem,
     pond_locator,
     rainfall_api,
     water_volume,
@@ -68,40 +69,30 @@ async def analyze_area(req: AnalyzeAreaRequest):
     center_lon = (lon_min + lon_max) / 2.0
     center_lat = (lat_min + lat_max) / 2.0
 
-    # --- Build a DEM for the selected area ---
-    # Prefer the offline contour-map DEM when the area is within its coverage
-    # (fast, reliable, no external API). Only fall back to the elevation API for
-    # areas outside the bundled map. This keeps the sample area working even when
-    # the free elevation API is rate-limited or unreachable.
+    # --- Build a DEM for the selected block from OpenTopography ---
+    # One request returns the whole raster for the selected area; we then run the
+    # same Phase 2 hydrology pipeline (including the river/channel exclusion) on it.
     bbox = tuple(req.bbox)
     try:
-        elevation_api._validate_bbox(bbox)  # sane bbox for either path
+        grid = await elevation_api.fetch_dem_grid(bbox)
+        dem_source = f"OpenTopography ({elevation_api.DEFAULT_DEMTYPE})"
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-
-    grid = None
-    dem_source = None
-    try:
-        if local_dem.covers(bbox):
-            grid = local_dem.build_local_grid(bbox, grid_size=req.grid_size)
-            if grid is not None:
-                dem_source = "contour map (offline)"
-    except Exception:
-        grid = None  # any trouble with the local DEM → fall back to the API
-
-    if grid is None:
-        try:
-            grid = await elevation_api.fetch_dem_grid(bbox, grid_size=req.grid_size)
-            dem_source = "Open-Meteo elevation API"
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc))
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Elevation grid error: {exc}")
+    except elevation_api.ElevationConfigError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Elevation grid error: {exc}")
 
     notes.append(f"Elevation source: {dem_source}")
     notes.extend(grid.notes)
+
+    # Contour lines from the DEM, for the map to display the terrain.
+    try:
+        contour_features = contour_lines.generate(grid.dem, grid.lon_grid, grid.lat_grid)
+    except Exception:
+        contour_features = []  # display-only; never fail the analysis over it
 
     # --- Flow direction/accumulation (computed once, reused per candidate) ---
     try:
@@ -222,6 +213,7 @@ async def analyze_area(req: AnalyzeAreaRequest):
 
     return AnalyzeAreaResponse(
         candidates=results,
+        contours=[ContourFeature(**c) for c in contour_features],
         rainfall=RainfallInfo(
             annual_rainfall_mm=rain.annual_rainfall_mm,
             source=rain.source,
