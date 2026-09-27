@@ -30,3 +30,12 @@ data/raw/
 
 # Docs exports
 docs/**/*.pdf.tmp
+
+# LaTeX build artifacts
+docs/*.aux
+docs/*.log
+docs/*.out
+docs/*.fls
+docs/*.fdb_latexmk
+docs/*.synctex.gz
+docs/*.toc
