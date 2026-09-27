@@ -90,6 +90,10 @@ body {
 .bbox-line.ok { color: var(--accent-ink); }
 .bbox-line.warn { color: #b45309; }
 .or-line { margin: 8px 0 0; }
+.draw-hint {
+  margin: 8px 0 0; padding: 8px 10px;
+  background: #fff8e1; border: 1px solid #f5d97a; border-radius: 8px;
+}
 .linklike {
   background: none; border: none; padding: 0;
   color: var(--primary); font: inherit; cursor: pointer; text-decoration: underline;
