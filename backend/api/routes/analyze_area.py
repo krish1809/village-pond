@@ -152,6 +152,11 @@ async def analyze_area(req: AnalyzeAreaRequest):
             footprint_mask, footprint_info = pond_locator.compute_pond_footprint(
                 grid.dem, cand.row, cand.col
             )
+            # A pond can only occupy the low part of the land that drains into it,
+            # so clip its footprint to the catchment. This also guarantees the
+            # pond area never exceeds the catchment area (the catchment is the
+            # water source; the pond is where that water collects).
+            footprint_mask = footprint_mask & catch.mask
             footprint_poly = geometry_utils.catchment_polygon(footprint_mask, grid.meta)
             footprint_area_m2, footprint_perim_m = geometry_utils.catchment_geometry(
                 footprint_poly, cand.lon, cand.lat

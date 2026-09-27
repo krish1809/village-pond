@@ -29,11 +29,18 @@ export default function App() {
   const [error, setError] = useState(null)
 
   const [numCandidates, setNumCandidates] = useState(3)
+  const [drawing, setDrawing] = useState(false)
+
+  function handleBbox(b) {
+    setBbox(b)
+    setDrawing(false)
+  }
 
   function captureView() {
     setError(null)
     setResults(null)
     setBbox(null)
+    setDrawing(false)
     setCaptureToken((t) => t + 1)
   }
 
@@ -41,6 +48,7 @@ export default function App() {
     setError(null)
     setResults(null)
     setBbox(null)
+    setDrawing(true)
     setDrawToken((t) => t + 1)
   }
 
@@ -87,8 +95,13 @@ export default function App() {
               Use current map view
             </button>
             <p className="muted small or-line">
-              or <button className="linklike" onClick={startDrawing}>draw a rectangle by dragging</button>
+              or <button className="linklike" onClick={startDrawing}>draw by clicking two corners</button>
             </p>
+            {drawing && (
+              <p className="muted small draw-hint">
+                Click the <b>first corner</b> on the map, then click the <b>opposite corner</b>.
+              </p>
+            )}
             {bbox && (() => {
               const sz = bboxSize(bbox)
               return (
@@ -150,7 +163,7 @@ export default function App() {
             results={results}
             selectedRank={selectedRank}
             onSelectRank={setSelectedRank}
-            onBboxDrawn={setBbox}
+            onBboxDrawn={handleBbox}
             drawToken={drawToken}
             captureToken={captureToken}
             jumpToken={jumpToken}
