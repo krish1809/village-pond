@@ -23,6 +23,9 @@ export default function ResultsPanel({ results, selectedRank, onSelectRank }) {
           DEM {area_summary.grid_resolution} · elevation {area_summary.elevation_min_m}–
           {area_summary.elevation_max_m} m · analysed in {metadata.total_processing_time_s}s
         </p>
+        {area_summary.dem_source && (
+          <p className="muted small">Elevation source: {area_summary.dem_source}</p>
+        )}
       </section>
 
       <h3 className="section-title">Suggested pond sites ({candidates.length})</h3>

@@ -207,6 +207,9 @@ class AreaSummary(BaseModel):
     grid_resolution: str = Field(..., description="DEM grid shape, e.g. '50x40'")
     elevation_min_m: float
     elevation_max_m: float
+    dem_source: str = Field(
+        default="", description="Where the elevation model came from: 'contour map (offline)' or 'Open-Meteo elevation API'"
+    )
 
 
 class AreaCandidateResult(BaseModel):

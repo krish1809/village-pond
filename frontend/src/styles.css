@@ -78,7 +78,9 @@ body {
 .btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .btn.primary { background: var(--primary); color: #fff; }
 .btn.accent { background: var(--accent); color: #fff; }
+.btn.ghost { background: #eef2f7; color: var(--ink); border-color: var(--line); font-weight: 500; }
 .btn:not(:disabled):hover { filter: brightness(1.05); }
+.mt-sm { margin-top: 8px; }
 
 .field { display: block; margin: 10px 0; font-size: 13px; }
 .field span { display: block; margin-bottom: 4px; color: var(--muted); }

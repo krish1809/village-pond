@@ -22,6 +22,7 @@ export default function App() {
   const [bbox, setBbox] = useState(null)
   const [drawToken, setDrawToken] = useState(0)
   const [captureToken, setCaptureToken] = useState(0)
+  const [jumpToken, setJumpToken] = useState(0)
   const [results, setResults] = useState(null)
   const [selectedRank, setSelectedRank] = useState(1)
   const [loading, setLoading] = useState(false)
@@ -80,7 +81,10 @@ export default function App() {
               Pan and zoom the map to frame the terrain you want (aim for a village-sized patch,
               ~1–3 km across), then click the button below — it selects what’s in view. No dragging needed.
             </p>
-            <button className="btn primary" onClick={captureView}>
+            <button className="btn ghost" onClick={() => setJumpToken((t) => t + 1)}>
+              ⤺ Go to sample area (works offline)
+            </button>
+            <button className="btn primary mt-sm" onClick={captureView}>
               Use current map view
             </button>
             <p className="muted small or-line">
@@ -158,6 +162,7 @@ export default function App() {
             onBboxDrawn={setBbox}
             drawToken={drawToken}
             captureToken={captureToken}
+            jumpToken={jumpToken}
           />
         </main>
       </div>

@@ -35,6 +35,7 @@ from modules import (
     catchment,
     elevation_api,
     geometry_utils,
+    local_dem,
     pond_locator,
     rainfall_api,
     water_volume,
@@ -67,17 +68,39 @@ async def analyze_area(req: AnalyzeAreaRequest):
     center_lon = (lon_min + lon_max) / 2.0
     center_lat = (lat_min + lat_max) / 2.0
 
-    # --- Fetch a DEM for the selected area ---
+    # --- Build a DEM for the selected area ---
+    # Prefer the offline contour-map DEM when the area is within its coverage
+    # (fast, reliable, no external API). Only fall back to the elevation API for
+    # areas outside the bundled map. This keeps the sample area working even when
+    # the free elevation API is rate-limited or unreachable.
+    bbox = tuple(req.bbox)
     try:
-        grid = await elevation_api.fetch_dem_grid(tuple(req.bbox), grid_size=req.grid_size)
+        elevation_api._validate_bbox(bbox)  # sane bbox for either path
     except ValueError as exc:
-        # bbox too large / too small / malformed
         raise HTTPException(status_code=422, detail=str(exc))
-    except RuntimeError as exc:
-        # elevation service unreachable / incomplete
-        raise HTTPException(status_code=502, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Elevation grid error: {exc}")
+
+    grid = None
+    dem_source = None
+    try:
+        if local_dem.covers(bbox):
+            grid = local_dem.build_local_grid(bbox, grid_size=req.grid_size)
+            if grid is not None:
+                dem_source = "contour map (offline)"
+    except Exception:
+        grid = None  # any trouble with the local DEM → fall back to the API
+
+    if grid is None:
+        try:
+            grid = await elevation_api.fetch_dem_grid(bbox, grid_size=req.grid_size)
+            dem_source = "Open-Meteo elevation API"
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Elevation grid error: {exc}")
+
+    notes.append(f"Elevation source: {dem_source}")
     notes.extend(grid.notes)
 
     # --- Flow direction/accumulation (computed once, reused per candidate) ---
@@ -212,6 +235,7 @@ async def analyze_area(req: AnalyzeAreaRequest):
             grid_resolution=f"{grid.meta.rows}x{grid.meta.cols}",
             elevation_min_m=round(float(grid.dem.min()), 2),
             elevation_max_m=round(float(grid.dem.max()), 2),
+            dem_source=dem_source,
         ),
         metadata=AnalysisMetadata(
             source_filename=f"open-meteo DEM for bbox {req.bbox}",
