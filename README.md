@@ -89,13 +89,21 @@ Run the tests:
 cd backend && python -m pytest tests/ -v
 ```
 
-## Note on the elevation API
-The free Open-Meteo elevation tier is rate-limited (600 calls/minute, weighted by
-how many coordinates you request). Each analysis is capped at ~500 elevation
-samples so one run fits inside that budget; fetched grids and rainfall are cached
-in memory, so re-analysing the same or an adjacent area is instant. Rainfall has
-an offline fallback; if the elevation service is momentarily throttled, wait a
-minute or select a smaller area.
+## Elevation data (hybrid, so the demo never depends on a flaky API)
+The free Open-Meteo elevation tier has a hard daily request limit that a live
+demo can exhaust. So the DEM source is hybrid:
+
+- **Inside the bundled contour map's coverage** (the sample area), the DEM is
+  built straight from `contours_1m.kml` — fully offline, ~1.5 s, no API, no rate
+  limit. This is the reliable place to demo; the web app opens here and has a
+  "Go to sample area" button.
+- **Outside that coverage** (anywhere else on Earth), it falls back to the
+  Open-Meteo elevation API (samples ≤500 points, interpolated to a finer grid;
+  batched, cached, 429-resilient).
+
+The response's `area_summary.dem_source` says which was used. Rainfall comes from
+Open-Meteo's historical archive with an offline fallback, so volume figures are
+always produced.
 
 ## Author
 Solo project — Rishi Kharya
