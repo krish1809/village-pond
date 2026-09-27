@@ -170,7 +170,7 @@ def analyze_contour(
             catchment=CatchmentInfo(
                 area_sq_m=round(area_m2, 2),
                 perimeter_m=round(perim_m, 2),
-                boundary=GeoJSONPolygon(**geojson_boundary),
+                boundary=geojson_boundary,
             ),
             suitability=SuitabilityFactors(
                 wetness_index=round(cand.wetness_index, 4),
