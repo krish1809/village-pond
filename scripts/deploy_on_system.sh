@@ -43,15 +43,22 @@ else
   echo "    all dependencies already present."
 fi
 
+# Find the PID listening on $PORT. lsof isn't installed on the lab boxes, so try
+# ss first, then fuser, then lsof — whichever exists.
+pid_on_port() {
+  ss -ltnp 2>/dev/null | grep ":$PORT " | grep -oP 'pid=\K[0-9]+' | head -1 && return 0
+  fuser "$PORT"/tcp 2>/dev/null | tr -d ' ' && return 0
+  lsof -ti tcp:"$PORT" 2>/dev/null | head -1 && return 0
+}
+
 echo "==> Stopping our previous server on port $PORT (only that process)"
-OLD_PID="$(lsof -ti tcp:"$PORT" 2>/dev/null || true)"
+OLD_PID="$(pid_on_port || true)"
 if [ -n "$OLD_PID" ]; then
-  echo "    killing PID(s): $OLD_PID"
+  echo "    killing PID $OLD_PID"
   kill $OLD_PID 2>/dev/null || true
   sleep 2
-  # force only if still alive
-  STILL="$(lsof -ti tcp:"$PORT" 2>/dev/null || true)"
-  [ -n "$STILL" ] && kill -9 $STILL 2>/dev/null || true
+  STILL="$(pid_on_port || true)"
+  [ -n "$STILL" ] && { echo "    force-killing $STILL"; kill -9 $STILL 2>/dev/null || true; sleep 1; }
 else
   echo "    nothing was listening on $PORT"
 fi
