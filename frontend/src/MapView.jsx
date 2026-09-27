@@ -11,7 +11,7 @@ export const SAMPLE_ZOOM = 15
 const DEFAULT_CENTER = SAMPLE_CENTER
 const DEFAULT_ZOOM = SAMPLE_ZOOM
 
-export default function MapView({ results, selectedRank, onSelectRank, onBboxDrawn, drawToken, captureToken, jumpToken }) {
+export default function MapView({ results, selectedRank, onSelectRank, onBboxDrawn, drawToken, captureToken, jumpToken, flyTarget, flyToken }) {
   const mapRef = useRef(null)
   const selectionLayerRef = useRef(null)
   const resultLayerRef = useRef(null)
@@ -105,6 +105,12 @@ export default function MapView({ results, selectedRank, onSelectRank, onBboxDra
     mapRef.current.setView(SAMPLE_CENTER, SAMPLE_ZOOM)
   }, [jumpToken])
 
+  // --- Fly to a searched place when the parent bumps flyToken ---
+  useEffect(() => {
+    if (!mapRef.current || flyToken === 0 || !flyTarget) return
+    mapRef.current.flyTo(flyTarget, 15, { duration: 1.0 })
+  }, [flyToken])
+
   // --- "Use current map view": select the centre ~70% of what's on screen ---
   useEffect(() => {
     if (!mapRef.current || captureToken === 0) return
@@ -168,16 +174,21 @@ export default function MapView({ results, selectedRank, onSelectRank, onBboxDra
         },
       }).addTo(layerGroup)
 
-      // Pond footprint — solid filled water region, clearly visible.
-      L.geoJSON(cand.pond_footprint.boundary, {
+      // Pond footprint — solid filled water region, clearly visible, labelled
+      // with its approximate area so the pond boundary reads on the map.
+      const pondLayer = L.geoJSON(cand.pond_footprint.boundary, {
         style: {
           color: '#ffffff',
           weight: isSelected ? 3 : 2,
           fillColor: color,
-          fillOpacity: isSelected ? 0.75 : 0.5,
+          fillOpacity: isSelected ? 0.8 : 0.55,
           opacity: 1,
         },
       }).addTo(layerGroup)
+      pondLayer.bindTooltip(
+        `Rank ${cand.rank} pond ≈ ${formatArea(cand.pond_footprint.area_sq_m)}`,
+        { permanent: isSelected, direction: 'top', className: 'pond-label', opacity: 0.95 },
+      )
 
       // Pond location marker — a circle (no dependency on Leaflet marker images).
       const marker = L.circleMarker([cand.location.latitude, cand.location.longitude], {
