@@ -15,7 +15,16 @@
 \renewcommand\footnotetextcopyrightpermission[1]{}
 
 \usepackage{tikz}
-\usetikzlibrary{arrows.meta,positioning}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds}
+
+%% Palette for the architecture diagram (block-diagram style).
+\definecolor{cUser}{HTML}{4B5563}
+\definecolor{cFront}{HTML}{1F5C99}
+\definecolor{cBack}{HTML}{0E7C66}
+\definecolor{cAnalysis}{HTML}{4C3F9E}
+\definecolor{cSub}{HTML}{6B5DD3}
+\definecolor{cCache}{HTML}{2E7D32}
+\definecolor{cExt}{HTML}{9E3B2E}
 
 \begin{document}
 
@@ -178,29 +187,61 @@ data flow between them.
 
 \begin{figure}[h]
   \centering
+  \resizebox{\linewidth}{!}{%
   \begin{tikzpicture}[
-    node distance=5mm and 8mm,
-    box/.style={draw,rounded corners=2pt,align=center,inner sep=3.5pt,font=\small,fill=blue!4},
-    ext/.style={draw,rounded corners=2pt,align=center,inner sep=3.5pt,font=\small,fill=green!6},
-    arr/.style={-{Stealth[length=2mm]},thick,gray!70},
+    font=\sffamily,
+    lay/.style={rounded corners=4pt, align=center, inner sep=6pt, text=white, minimum height=13mm},
+    sub/.style={rounded corners=3pt, align=center, inner sep=4pt, text=white, fill=cSub, text width=3.4cm, minimum height=15mm},
+    note/.style={align=center, font=\footnotesize, text=black},
+    arr/.style={-{Stealth[length=2.6mm]}, thick, gray!55},
+    darr/.style={{Stealth[length=2.6mm]}-{Stealth[length=2.6mm]}, thick, gray!55},
   ]
-  \node[box] (fe) {\textbf{Presentation} --- React + Leaflet (browser)\\map, place search, area select, overlays, charts};
-  \node[box,below=of fe] (api) {\textbf{Orchestration} --- FastAPI \texttt{/analyzeArea}\\(validation, caching, response assembly)};
-  \node[ext,left=8mm of api] (dem) {OpenTopography\\DEM API};
-  \node[ext,right=8mm of api] (rain) {Open-Meteo\\rainfall};
-  \node[box,below=of api] (pipe) {\textbf{Analysis} --- in-process pipeline\\flow routing $\rightarrow$ siting $\rightarrow$ catchment $\rightarrow$ volume};
-  \draw[arr] (fe) -- node[right,font=\scriptsize]{HTTP + JSON} (api);
-  \draw[arr] (dem) -- (api);
-  \draw[arr] (rain) -- (api);
-  \draw[arr] (api) -- (pipe);
-  \draw[arr] (pipe.west) to[bend left=45] node[left,font=\scriptsize]{results} (fe.west);
-  \end{tikzpicture}
-  \caption{High-level architecture. The single FastAPI process both serves the
-  front-end and orchestrates the external data APIs and the analysis pipeline.}
+  % --- vertical spine ---
+  \node[lay, fill=cUser, text width=6.6cm] (user) {\textbf{User / village admin}\\[1pt]\small Browser, map interface};
+  \node[lay, fill=cFront, text width=6.6cm, below=7mm of user] (fe)
+    {\textbf{Frontend (React + Leaflet)}\\[1pt]\small Map, place search, contours, overlays, charts};
+  \node[lay, fill=cBack, text width=6.6cm, below=7mm of fe] (be)
+    {\textbf{Backend API (FastAPI)}\\[1pt]\small REST endpoints, orchestration, validation, caching};
+
+  % --- analysis engine layer: title + three sub-modules ---
+  \node[below=9mm of be] (aeltitle) {};
+  \node[sub, anchor=north] (terrain) at ([xshift=-3.7cm,yshift=-2mm]aeltitle.north)
+    {\textbf{Terrain \& Hydrology}\\[1pt]\footnotesize DEM, contours, flow routing, catchment delineation};
+  \node[sub, right=5mm of terrain] (rain)
+    {\textbf{Rainfall}\\[1pt]\footnotesize Historical query, annual stats, runoff calc};
+  \node[sub, right=5mm of rain] (pond)
+    {\textbf{Pond sizing}\\[1pt]\footnotesize Footprint, depth, capacity, site ranking};
+  \begin{scope}[on background layer]
+    \node[fit=(terrain)(rain)(pond), rounded corners=5pt, fill=cAnalysis, inner sep=10pt] (ael) {};
+  \end{scope}
+  \node[anchor=north west, text=white, font=\bfseries] at ([shift={(4pt,-3pt)}]ael.north west)
+    {Analysis engine layer (in-process modules)};
+
+  % --- bottom layer: cache + external APIs ---
+  \node[lay, fill=cCache, text width=4.6cm, below left=11mm and 0.2cm of ael.south]
+    (cache) {\textbf{In-memory cache}\\[1pt]\small DEM by area, rainfall by centroid};
+  \node[lay, fill=cExt, text width=4.9cm, below right=11mm and 0.2cm of ael.south]
+    (ext) {\textbf{External data APIs}\\[1pt]\small OpenTopography (DEM), Open-Meteo (rainfall), Nominatim (search)};
+
+  \node[note, below=2mm of cache] {No persistent DB --- transient, per-area};
+  \node[note, below=2mm of ext] {Free public sources, queried on demand};
+
+  % --- arrows ---
+  \draw[arr] (user) -- (fe);
+  \draw[darr] (fe) -- node[right,font=\scriptsize,text=black]{HTTP + JSON} (be);
+  \draw[arr] (be) -- (ael);
+  \draw[darr] (ael.south) to[out=-120,in=90] (cache.north);
+  \draw[darr] (ael.south) to[out=-60,in=90] (ext.north);
+  \end{tikzpicture}}
+  \caption{High-level system architecture. The user's browser talks to the React
+  front-end, which calls the FastAPI backend; the backend orchestrates the
+  in-process analysis engine (terrain/hydrology, rainfall and pond-sizing modules),
+  an in-memory cache and the external data APIs. There is no persistent database.}
   \label{fig:architecture}
-  \Description{Four layers: a browser front-end, a FastAPI orchestration layer that
-  talks to the OpenTopography and Open-Meteo APIs, and an in-process analysis
-  pipeline; results flow back to the front-end as JSON overlays.}
+  \Description{A layered block diagram: user/browser at the top, then the React
+  front-end, then the FastAPI backend, then an analysis engine layer containing
+  terrain-and-hydrology, rainfall and pond-sizing modules, with an in-memory cache
+  and external data APIs (OpenTopography, Open-Meteo, Nominatim) at the bottom.}
 \end{figure}
 
 \subsection{What happens on one request}
@@ -229,29 +270,12 @@ call fails, the request does not: rainfall falls back to a documented default, a
 an unreachable DEM service returns a clear, actionable error instead of a stack
 trace.
 
-\begin{figure}[h]
-  \centering
-  \begin{tikzpicture}[
-    node distance=2.4mm,
-    st/.style={draw,rounded corners=1.5pt,align=center,inner sep=2.6pt,font=\scriptsize,fill=blue!3,text width=6.2cm},
-    ar/.style={-{Stealth[length=1.6mm]},gray!70},
-  ]
-  \node[st] (a) {Selected bbox $\rightarrow$ validate $\rightarrow$ cache check};
-  \node[st,below=of a] (b) {Fetch DEM (OpenTopography, ASCII grid, async)};
-  \node[st,below=of b] (c) {Build elevation grid + slope};
-  \node[st,below=of c] (d) {Fill depressions $\rightarrow$ D8 flow direction $\rightarrow$ flow accumulation};
-  \node[st,below=of d] (e) {Rank candidate sites (TWI/TPI, exclude steep + channels)};
-  \node[st,below=of e] (f) {Per site: catchment, footprint, UTM geometry};
-  \node[st,below=of f] (g) {Rainfall (Open-Meteo) $\rightarrow$ runoff, capacity, storage curve};
-  \node[st,below=of g] (h) {Assemble JSON (+ contours, drainage) $\rightarrow$ map overlays};
-  \foreach \x/\y in {a/b,b/c,c/d,d/e,e/f,f/g,g/h} \draw[ar] (\x) -- (\y);
-  \end{tikzpicture}
-  \caption{The processing pipeline, from the selected area to the map overlays.}
-  \label{fig:pipeline}
-  \Description{A vertical flow of eight stages from bounding-box validation and DEM
-  fetch, through terrain and flow analysis, site ranking, catchment and geometry,
-  rainfall and volume, to the assembled JSON and map overlays.}
-\end{figure}
+In short, the pipeline runs as: validate the box and check the cache; fetch the DEM
+(async); build the elevation grid and slope; fill depressions, then D8 flow
+direction, then flow accumulation; rank candidate sites (excluding steep ground and
+channels); per site, trace the catchment and footprint and measure them in UTM;
+query rainfall and compute runoff, capacity and the storage curve; and finally
+assemble the JSON (with contours and the drainage network) that the front-end draws.
 
 \subsection{Component responsibilities}
 I kept each analysis module to a single, non-overlapping job so that a change in
@@ -533,8 +557,7 @@ larger and cleaner catchments. The rainfall archive is sometimes unreachable, an
 when it is the system uses a documented fallback value and flags it, which makes
 those particular volume figures indicative rather than exact. The system also
 reasons only from terrain and rainfall: it does not know whether water already sits
-at a spot, and it does not do the civil design of the pond. And because the DEM's
-vertical values are whole metres, very gentle slopes read as almost flat. None of
+at a spot, and it does not do the civil design of the pond. None of
 these are bugs --- they follow from the input data and the scope --- but they are
 the reason the output is best treated as a shortlist to check on the ground rather
 than a final design.
