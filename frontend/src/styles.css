@@ -84,7 +84,14 @@ body {
 .field span { display: block; margin-bottom: 4px; color: var(--muted); }
 .field input[type='range'] { width: 100%; accent-color: var(--accent); }
 
-.bbox-line { margin-top: 8px; word-break: break-all; }
+.bbox-line { margin-top: 8px; word-break: break-word; font-weight: 600; }
+.bbox-line.ok { color: var(--accent-ink); }
+.bbox-line.warn { color: #b45309; }
+.or-line { margin: 8px 0 0; }
+.linklike {
+  background: none; border: none; padding: 0;
+  color: var(--primary); font: inherit; cursor: pointer; text-decoration: underline;
+}
 
 /* --- Error --- */
 .error { border-color: #f3c6c0; background: #fdf3f2; }

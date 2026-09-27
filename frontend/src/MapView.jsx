@@ -11,7 +11,7 @@ import { rankColor, formatArea, formatVolume } from './format.js'
 const DEFAULT_CENTER = [21.25, 81.295]
 const DEFAULT_ZOOM = 14
 
-export default function MapView({ results, selectedRank, onSelectRank, onBboxDrawn, drawToken }) {
+export default function MapView({ results, selectedRank, onSelectRank, onBboxDrawn, drawToken, captureToken }) {
   const mapRef = useRef(null)
   const selectionLayerRef = useRef(null)
   const resultLayerRef = useRef(null)
@@ -58,6 +58,33 @@ export default function MapView({ results, selectedRank, onSelectRank, onBboxDra
     })
     drawerRef.current.enable()
   }, [drawToken])
+
+  // --- "Use current map view": select the centre ~70% of what's on screen, so
+  // the user just pans/zooms to frame the area and clicks — no dragging needed
+  // (much easier on a touchpad than the draw-rectangle tool). ---
+  useEffect(() => {
+    if (!mapRef.current || captureToken === 0) return
+    if (drawerRef.current) drawerRef.current.disable()
+    resultLayerRef.current.clearLayers()
+
+    const b = mapRef.current.getBounds()
+    const latC = (b.getSouth() + b.getNorth()) / 2
+    const lonC = (b.getWest() + b.getEast()) / 2
+    const halfLat = ((b.getNorth() - b.getSouth()) / 2) * 0.7
+    const halfLon = ((b.getEast() - b.getWest()) / 2) * 0.7
+    const south = latC - halfLat
+    const north = latC + halfLat
+    const west = lonC - halfLon
+    const east = lonC + halfLon
+
+    selectionLayerRef.current.clearLayers()
+    L.rectangle([[south, west], [north, east]], {
+      color: '#f5c518', weight: 2, fillOpacity: 0.05, dashArray: '6 4',
+    }).addTo(selectionLayerRef.current)
+
+    onBboxDrawn([west, south, east, north])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [captureToken])
 
   // --- Draw the analysis result overlays whenever results/selection change ---
   useEffect(() => {
