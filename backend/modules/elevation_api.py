@@ -220,6 +220,13 @@ async def fetch_dem_grid(
         raise RuntimeError(f"Could not reach the OpenTopography DEM service: {exc}") from exc
 
     if resp.status_code == 401:
+        body = (resp.text or "").lower()
+        if "rate limit" in body or "maximum" in body or "calls" in body:
+            raise RuntimeError(
+                "OpenTopography's free daily limit (50 DEM requests per 24 hours) has been "
+                "reached. It resets after 24 hours; until then, areas already analysed still "
+                "work from the cache."
+            )
         raise ElevationConfigError("OpenTopography rejected the API key (401). Check OPENTOPOGRAPHY_API_KEY.")
     if resp.status_code == 400:
         raise ValueError(f"OpenTopography rejected the request: {resp.text[:200]}")
