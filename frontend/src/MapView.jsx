@@ -3,7 +3,7 @@ import L from 'leaflet'
 import 'leaflet-draw'
 import 'leaflet/dist/leaflet.css'
 import 'leaflet-draw/dist/leaflet.draw.css'
-import { rankColor, formatArea, formatVolume } from './format.js'
+import { rankColor, formatArea, formatVolume, elevationColor } from './format.js'
 
 // Default view: the sample contour area (a village near Raipur, Chhattisgarh).
 // This region is covered by the bundled contour map, so analysis here runs fully
@@ -31,8 +31,9 @@ export default function MapView({ results, selectedRank, onSelectRank, onBboxDra
       maxZoom: 19,
     })
 
-    const map = L.map('map', { center: DEFAULT_CENTER, zoom: DEFAULT_ZOOM, layers: [satellite] })
-    L.control.layers({ Satellite: satellite, Streets: streets }, {}, { position: 'topright' }).addTo(map)
+    // Plain OpenStreetMap as the default base; Esri satellite imagery as a toggle.
+    const map = L.map('map', { center: DEFAULT_CENTER, zoom: DEFAULT_ZOOM, layers: [streets] })
+    L.control.layers({ Map: streets, Satellite: satellite }, {}, { position: 'topright' }).addTo(map)
 
     selectionLayerRef.current = L.featureGroup().addTo(map)
     resultLayerRef.current = L.featureGroup().addTo(map)
@@ -101,6 +102,23 @@ export default function MapView({ results, selectedRank, onSelectRank, onBboxDra
     if (!layerGroup) return
     layerGroup.clearLayers()
     if (!results) return
+
+    // Contour lines generated from the DEM — draw first, underneath everything,
+    // so the terrain reads like a topographic map behind the pond/catchment.
+    const contours = results.contours || []
+    if (contours.length) {
+      const lo = results.area_summary.elevation_min_m
+      const hi = results.area_summary.elevation_max_m
+      contours.forEach((c) => {
+        const latlngs = c.coordinates.map(([lon, lat]) => [lat, lon])
+        L.polyline(latlngs, {
+          color: elevationColor(c.elevation, lo, hi),
+          weight: 0.8,
+          opacity: 0.7,
+          interactive: false,
+        }).addTo(layerGroup)
+      })
+    }
 
     results.candidates.forEach((cand) => {
       const color = rankColor(cand.rank)

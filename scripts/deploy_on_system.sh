@@ -18,6 +18,16 @@ PORT="${PORT:-5000}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# Load secrets (e.g. OPENTOPOGRAPHY_API_KEY) from a .env file that is NOT in git.
+# Create it once on each system:  echo 'OPENTOPOGRAPHY_API_KEY=...' > .env
+if [ -f "$ROOT/.env" ]; then
+  set -a; . "$ROOT/.env"; set +a
+  echo "==> Loaded environment from .env"
+fi
+if [ -z "${OPENTOPOGRAPHY_API_KEY:-}" ]; then
+  echo "    WARNING: OPENTOPOGRAPHY_API_KEY is not set — /analyzeArea will return a config error." >&2
+fi
+
 # Use the interpreter that actually has the deps. On the lab systems that's the
 # pre-installed conda Python (the system python3 is dep-less); fall back to
 # python3 elsewhere. We deliberately do NOT create a venv (saves the ~512 MB /

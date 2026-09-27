@@ -1,7 +1,7 @@
-"""Tests for the elevation-API grid building (Phase 3).
+"""Tests for the OpenTopography elevation module (Phase 3).
 
-These cover the pure, offline parts — bbox validation, grid shaping, and turning
-a flat array of elevations into a GridResult — without hitting the network.
+These cover the offline parts — bbox validation, AAIGrid parsing, and
+downsampling — without hitting the network or needing an API key.
 """
 
 import numpy as np
@@ -13,7 +13,7 @@ from modules.terrain_grid import GridResult
 
 def test_rejects_too_large_bbox():
     with pytest.raises(ValueError, match="too large"):
-        elevation_api._validate_bbox((0.0, 0.0, 5.0, 5.0))
+        elevation_api._validate_bbox((0.0, 0.0, 1.0, 1.0))
 
 
 def test_rejects_inverted_bbox():
@@ -23,63 +23,68 @@ def test_rejects_inverted_bbox():
 
 def test_rejects_too_small_bbox():
     with pytest.raises(ValueError, match="too small"):
-        elevation_api._validate_bbox((81.2800, 21.2400, 81.2805, 21.2405))
+        elevation_api._validate_bbox((81.2800, 21.2400, 81.2810, 21.2410))
 
 
-def test_analysis_grid_preserves_aspect():
-    # A wide, short box → cols (lon axis) should be the long axis.
-    meta = elevation_api._plan_analysis_grid((81.0, 21.0, 81.4, 21.1), grid_size=60)
-    assert meta.cols > meta.rows     # longer (lon) axis has more cells
-    assert meta.rows * meta.cols <= elevation_api.MAX_ANALYSIS_CELLS
-
-
-def test_sampling_grid_stays_within_api_budget():
-    # The sampling grid must never exceed the rate-limit point cap, whatever the box.
-    for box in [(81.0, 21.0, 81.3, 21.3), (81.0, 21.0, 81.5, 21.1), (81.0, 21.0, 81.02, 21.05)]:
-        meta = elevation_api._plan_sampling_grid(box)
-        assert meta.rows * meta.cols <= elevation_api.MAX_SAMPLE_POINTS
-
-
-def test_analysis_grid_is_finer_than_sampling_grid():
-    box = (81.0, 21.0, 81.3, 21.3)
-    sample = elevation_api._plan_sampling_grid(box)
-    analysis = elevation_api._plan_analysis_grid(box, grid_size=80)
-    assert analysis.rows * analysis.cols > sample.rows * sample.cols
-
-
-def test_interpolation_produces_full_analysis_grid():
-    box = (81.0, 21.0, 81.05, 21.05)
-    sample = elevation_api._plan_sampling_grid(box)
-    s_lon, s_lat = elevation_api._grid_coordinates(sample)
-    # A tilted plane so linear interpolation is exact and slope is non-zero.
-    s_elev = (s_lon * 1000 + s_lat * 500).ravel()
-
-    analysis = elevation_api._plan_analysis_grid(box, grid_size=40)
-    dem_flat = elevation_api._interpolate_to_analysis_grid(
-        s_lon.ravel(), s_lat.ravel(), s_elev, analysis
+def _make_aaigrid(nrows, ncols, xll, yll, cell, values_north_to_south):
+    header = (
+        f"ncols {ncols}\nnrows {nrows}\n"
+        f"xllcorner {xll}\nyllcorner {yll}\n"
+        f"cellsize {cell}\nNODATA_value -9999\n"
     )
-    assert dem_flat.shape == (analysis.rows * analysis.cols,)
-    assert not np.isnan(dem_flat).any()
+    rows = "\n".join(" ".join(str(v) for v in row) for row in values_north_to_south)
+    return header + rows + "\n"
 
 
-def test_build_grid_result_reshapes_and_computes_slope():
-    meta = elevation_api._plan_analysis_grid((81.0, 21.0, 81.05, 21.05), grid_size=20)
-    lon_grid, lat_grid = elevation_api._grid_coordinates(meta)
-    # A simple tilted plane so slope is well-defined and non-zero.
-    elevations = (lon_grid * 1000 + lat_grid * 500).ravel()
-    grid = elevation_api.build_grid_result(elevations, meta, lon_grid, lat_grid)
+def test_parse_aaigrid_shapes_and_metadata():
+    # 2 rows x 3 cols. Data is north-to-south; parser flips so row 0 = south.
+    north = [10, 11, 12]
+    south = [20, 21, 22]
+    text = _make_aaigrid(2, 3, 81.0, 21.0, 0.001, [north, south])
+    dem, meta = elevation_api.parse_aaigrid(text)
 
+    assert dem.shape == (2, 3)
+    assert meta.rows == 2 and meta.cols == 3
+    # After the vertical flip, row 0 (southernmost) should be the 'south' row.
+    assert list(dem[0]) == [20, 21, 22]
+    assert list(dem[1]) == [10, 11, 12]
+    assert meta.lon_min == 81.0
+    assert abs(meta.lat_max - (21.0 + 2 * 0.001)) < 1e-9
+
+
+def test_parse_aaigrid_replaces_nodata():
+    text = _make_aaigrid(1, 3, 81.0, 21.0, 0.001, [[100, -9999, 200]])
+    dem, _ = elevation_api.parse_aaigrid(text)
+    assert not (dem == -9999).any()
+    # the NODATA cell is filled with the mean of the good cells (150)
+    assert dem[0, 1] == 150
+
+
+def test_downsample_caps_long_axis():
+    n = elevation_api.MAX_LONG_AXIS_CELLS * 3
+    dem = np.random.rand(n, n)
+    from modules.terrain_grid import GridMeta
+    meta = GridMeta(lon_min=81.0, lon_max=81.3, lat_min=21.0, lat_max=21.3,
+                    cell_lon=0.0003 / 3, cell_lat=0.0003 / 3, rows=n, cols=n)
+    dem2, meta2 = elevation_api._downsample(dem, meta)
+    assert max(meta2.rows, meta2.cols) <= elevation_api.MAX_LONG_AXIS_CELLS
+    assert dem2.shape == (meta2.rows, meta2.cols)
+
+
+def test_build_grid_result_from_parsed_dem():
+    # A tilted plane so slope is well-defined.
+    ncols, nrows = 20, 15
+    rows_vals = [[c + r * 2 for c in range(ncols)] for r in range(nrows)]
+    text = _make_aaigrid(nrows, ncols, 81.0, 21.0, 0.001, rows_vals)
+    dem, meta = elevation_api.parse_aaigrid(text)
+    grid = elevation_api._build_grid_result(dem, meta, ["note"])
     assert isinstance(grid, GridResult)
     assert grid.dem.shape == (meta.rows, meta.cols)
     assert grid.slope.shape == (meta.rows, meta.cols)
-    assert not np.isnan(grid.dem).any()
     assert grid.slope.min() >= 0.0
 
 
-def test_build_grid_result_fills_missing_values():
-    meta = elevation_api._plan_analysis_grid((81.0, 21.0, 81.05, 21.05), grid_size=20)
-    lon_grid, lat_grid = elevation_api._grid_coordinates(meta)
-    elevations = np.full(meta.rows * meta.cols, 300.0)
-    elevations[0] = np.nan
-    grid = elevation_api.build_grid_result(elevations, meta, lon_grid, lat_grid)
-    assert not np.isnan(grid.dem).any()
+def test_missing_api_key_raises_config_error(monkeypatch):
+    monkeypatch.delenv("OPENTOPOGRAPHY_API_KEY", raising=False)
+    with pytest.raises(elevation_api.ElevationConfigError):
+        elevation_api._api_key()

@@ -233,12 +233,6 @@ class AnalyzeAreaRequest(BaseModel):
         min_length=4,
         max_length=4,
     )
-    grid_size: int = Field(
-        default=70, ge=40, le=120,
-        description="Analysis grid resolution (cells along the longer axis). The DEM is "
-                    "sampled coarsely from the API to respect its rate limit, then "
-                    "interpolated onto this finer grid for the hydrology.",
-    )
     num_candidates: int = Field(
         default=3, ge=1, le=10, description="How many ranked candidate sites to return."
     )
@@ -249,9 +243,16 @@ class AnalyzeAreaRequest(BaseModel):
 
     model_config = {
         "json_schema_extra": {
-            "examples": [{"bbox": [81.28, 21.24, 81.31, 21.26], "grid_size": 50, "num_candidates": 3}]
+            "examples": [{"bbox": [81.28, 21.24, 81.31, 21.26], "num_candidates": 3}]
         }
     }
+
+
+class ContourFeature(BaseModel):
+    """One contour polyline generated from the DEM, for display on the map."""
+
+    elevation: float = Field(..., description="Elevation of this contour line (metres)")
+    coordinates: List[List[float]] = Field(..., description="Polyline as [[lon, lat], ...]")
 
 
 class AnalyzeAreaResponse(BaseModel):
@@ -259,6 +260,9 @@ class AnalyzeAreaResponse(BaseModel):
 
     candidates: List[AreaCandidateResult] = Field(
         ..., description="Ranked candidate pond sites, best first"
+    )
+    contours: List[ContourFeature] = Field(
+        default_factory=list, description="Elevation contour lines generated from the DEM, for map display"
     )
     rainfall: RainfallInfo
     area_summary: AreaSummary

@@ -28,7 +28,6 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
-  const [gridSize, setGridSize] = useState(70)
   const [numCandidates, setNumCandidates] = useState(3)
 
   function captureView() {
@@ -51,7 +50,7 @@ export default function App() {
     setError(null)
     setResults(null)
     try {
-      const data = await analyzeArea({ bbox, gridSize, numCandidates })
+      const data = await analyzeArea({ bbox, numCandidates })
       setResults(data)
       setSelectedRank(1)
     } catch (err) {
@@ -82,7 +81,7 @@ export default function App() {
               ~1–3 km across), then click the button below — it selects what’s in view. No dragging needed.
             </p>
             <button className="btn ghost" onClick={() => setJumpToken((t) => t + 1)}>
-              ⤺ Go to sample area (works offline)
+              ⤺ Go to sample area
             </button>
             <button className="btn primary mt-sm" onClick={captureView}>
               Use current map view
@@ -101,14 +100,6 @@ export default function App() {
             })()}
 
             <h3 className="mt">2 · Options</h3>
-            <label className="field">
-              <span>Detail (grid resolution): {gridSize}</span>
-              <input
-                type="range" min="40" max="100" step="10"
-                value={gridSize}
-                onChange={(e) => setGridSize(Number(e.target.value))}
-              />
-            </label>
             <label className="field">
               <span>Candidate sites: {numCandidates}</span>
               <input
