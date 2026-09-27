@@ -29,7 +29,10 @@ class CatchmentInfo(BaseModel):
 
     area_sq_m: float = Field(..., description="Catchment area in square metres")
     perimeter_m: float = Field(..., description="Catchment perimeter in metres")
-    boundary: GeoJSONPolygon = Field(..., description="Catchment boundary as a GeoJSON Polygon")
+    boundary: dict = Field(
+        ..., description="Catchment boundary as a GeoJSON geometry (Polygon or MultiPolygon — "
+                         "the watershed can be several disconnected pieces on flat terrain)"
+    )
 
 
 class SuitabilityFactors(BaseModel):

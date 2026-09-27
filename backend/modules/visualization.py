@@ -157,10 +157,16 @@ def render_area_png(grid, drainage_geojson, candidates, source_label: str = "") 
             ax.fill([p[0] for p in ring], [p[1] for p in ring],
                     color="#1e6fd6", alpha=0.30, linewidth=0, zorder=2)
 
+    def _exterior_rings(geom):
+        """Exterior ring(s) of a GeoJSON Polygon or MultiPolygon geometry dict."""
+        if geom.get("type") == "MultiPolygon":
+            return [poly[0] for poly in geom["coordinates"]]
+        return [geom["coordinates"][0]]
+
     colors = ["#0033cc", "#009933", "#cc6600", "#aa00aa", "#00aaaa"]
     for cand, color in zip(candidates, colors):
-        cc = cand.catchment.boundary.coordinates[0]
-        ax.plot([p[0] for p in cc], [p[1] for p in cc], "--", color=color, lw=1.5, alpha=0.8, zorder=3)
+        for ring in _exterior_rings(cand.catchment.boundary):
+            ax.plot([p[0] for p in ring], [p[1] for p in ring], "--", color=color, lw=1.5, alpha=0.8, zorder=3)
 
         fc = cand.pond_footprint.boundary.coordinates[0]
         ax.fill([p[0] for p in fc], [p[1] for p in fc], color=color, alpha=0.6, zorder=4)

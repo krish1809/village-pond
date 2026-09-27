@@ -110,16 +110,16 @@ async def analyze_area(
         raise HTTPException(status_code=500, detail=f"Flow computation error: {exc}")
     notes.extend(flow.notes)
 
-    # --- Existing drainage / river network (the cells excluded from pond siting) ---
-    # Same definition pond_locator uses: cells above the channel flow-accumulation
-    # percentile, plus a small buffer. Returned as GeoJSON so the map can show the
-    # existing watercourses the ponds are deliberately kept out of.
+    # --- Existing drainage / stream network ---
+    # These are the cells where surface flow concentrates most: flow accumulation
+    # above the channel percentile pond_locator uses to identify watercourses. We
+    # show the *raw* channel cells here (not the dilated buffer the siting logic
+    # also excludes) so the blue reads as the actual stream network rather than a
+    # fat blob. Ponds are kept off these channels (plus a small buffer).
     drainage_geojson = None
     try:
         chan_threshold = np.percentile(flow.flow_acc, pond_locator.CHANNEL_FLOW_ACC_PERCENTILE)
-        channel_mask = binary_dilation(
-            flow.flow_acc > chan_threshold, iterations=pond_locator.CHANNEL_BUFFER_CELLS
-        )
+        channel_mask = flow.flow_acc > chan_threshold
         if channel_mask.any():
             chan_poly = geometry_utils.catchment_polygon(channel_mask, grid.meta)
             drainage_geojson = geometry_utils.multipolygon_to_geojson(chan_poly)
@@ -175,7 +175,9 @@ async def analyze_area(
             # Area/perimeter are measured on the exact cell-union polygon (accurate);
             # the boundary sent to the map is smoothed so it doesn't look blocky.
             catch_area_m2, catch_perim_m = geometry_utils.catchment_geometry(catch_poly, cand.lon, cand.lat)
-            catch_geojson = geometry_utils.polygon_to_geojson(
+            # Keep ALL catchment pieces (the watershed can be fragmented on flat
+            # terrain), so the drawn catchment actually contains the pond.
+            catch_geojson = geometry_utils.multipolygon_to_geojson(
                 geometry_utils.smooth_polygon(catch_poly, smooth_cell_deg)
             )
 
@@ -232,7 +234,7 @@ async def analyze_area(
             catchment=CatchmentInfo(
                 area_sq_m=round(catch_area_m2, 2),
                 perimeter_m=round(catch_perim_m, 2),
-                boundary=GeoJSONPolygon(**catch_geojson),
+                boundary=catch_geojson,
             ),
             suitability=SuitabilityFactors(
                 wetness_index=round(cand.wetness_index, 4),
