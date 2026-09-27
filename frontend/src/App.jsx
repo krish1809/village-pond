@@ -93,9 +93,9 @@ export default function App() {
           <section className="card controls">
             <h3>1 · Find a place</h3>
             <Search onPick={flyToPlace} />
-            <p className="muted small or-line">
-              or <button className="linklike" onClick={() => setJumpToken((t) => t + 1)}>go to the sample area</button>
-            </p>
+            <button className="btn ghost mt-sm" onClick={() => setJumpToken((t) => t + 1)}>
+              ⤺ Go to sample area
+            </button>
 
             <h3 className="mt">2 · Select the land</h3>
             <p className="muted small">
@@ -104,9 +104,9 @@ export default function App() {
             <button className="btn primary big" onClick={captureView}>
               ◻ Select this area
             </button>
-            <p className="muted small or-line">
-              or <button className="linklike" onClick={startDrawing}>draw by clicking two corners</button>
-            </p>
+            <button className="btn ghost mt-sm" onClick={startDrawing}>
+              ▭ Draw by clicking two corners
+            </button>
             {drawing && (
               <p className="muted small draw-hint">
                 Click the <b>first corner</b> on the map, then click the <b>opposite corner</b>.
