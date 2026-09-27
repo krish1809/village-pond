@@ -5,13 +5,16 @@ import 'leaflet/dist/leaflet.css'
 import 'leaflet-draw/dist/leaflet.draw.css'
 import { rankColor, formatArea, formatVolume } from './format.js'
 
-// Default view: the sample contour area (a village in Chhattisgarh, India), so
-// the map opens somewhere with usable terrain. The user can pan anywhere — the
-// analysis works for any region, it isn't tied to this location.
-const DEFAULT_CENTER = [21.25, 81.295]
-const DEFAULT_ZOOM = 14
+// Default view: the sample contour area (a village near Raipur, Chhattisgarh).
+// This region is covered by the bundled contour map, so analysis here runs fully
+// offline (no elevation API, no rate limits) — the reliable place to demo. The
+// user can still pan anywhere; areas outside this map use the elevation API.
+export const SAMPLE_CENTER = [21.2517, 81.297]
+export const SAMPLE_ZOOM = 15
+const DEFAULT_CENTER = SAMPLE_CENTER
+const DEFAULT_ZOOM = SAMPLE_ZOOM
 
-export default function MapView({ results, selectedRank, onSelectRank, onBboxDrawn, drawToken, captureToken }) {
+export default function MapView({ results, selectedRank, onSelectRank, onBboxDrawn, drawToken, captureToken, jumpToken }) {
   const mapRef = useRef(null)
   const selectionLayerRef = useRef(null)
   const resultLayerRef = useRef(null)
@@ -58,6 +61,12 @@ export default function MapView({ results, selectedRank, onSelectRank, onBboxDra
     })
     drawerRef.current.enable()
   }, [drawToken])
+
+  // --- Recenter on the sample (offline) area when the parent bumps jumpToken ---
+  useEffect(() => {
+    if (!mapRef.current || jumpToken === 0) return
+    mapRef.current.setView(SAMPLE_CENTER, SAMPLE_ZOOM)
+  }, [jumpToken])
 
   // --- "Use current map view": select the centre ~70% of what's on screen, so
   // the user just pans/zooms to frame the area and clicks — no dragging needed
