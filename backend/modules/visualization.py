@@ -129,3 +129,64 @@ def render_analysis_png(
     plt.close(fig)
     buf.seek(0)
     return buf.read()
+
+
+def render_area_png(grid, drainage_geojson, candidates, source_label: str = "") -> bytes:
+    """
+    Render the /analyzeArea result as a report-quality PNG: the DEM as a shaded
+    terrain background, the excluded drainage network in blue, and each ranked
+    candidate's catchment (dashed) and pond footprint (filled) with a marker.
+
+    Draws from the response geometries already computed by the route (lon/lat), so
+    it never re-runs the analysis. matplotlib is imported lazily to keep it out of
+    RAM until a PNG is actually requested.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    meta = grid.meta
+    extent = [meta.lon_min, meta.lon_max, meta.lat_min, meta.lat_max]
+
+    fig, ax = plt.subplots(figsize=(11, 8))
+    ax.imshow(grid.dem, origin="lower", extent=extent, cmap="terrain", alpha=0.9, aspect="auto")
+
+    if drainage_geojson:
+        for poly in drainage_geojson.get("coordinates", []):
+            ring = poly[0]
+            ax.fill([p[0] for p in ring], [p[1] for p in ring],
+                    color="#1e6fd6", alpha=0.30, linewidth=0, zorder=2)
+
+    colors = ["#0033cc", "#009933", "#cc6600", "#aa00aa", "#00aaaa"]
+    for cand, color in zip(candidates, colors):
+        cc = cand.catchment.boundary.coordinates[0]
+        ax.plot([p[0] for p in cc], [p[1] for p in cc], "--", color=color, lw=1.5, alpha=0.8, zorder=3)
+
+        fc = cand.pond_footprint.boundary.coordinates[0]
+        ax.fill([p[0] for p in fc], [p[1] for p in fc], color=color, alpha=0.6, zorder=4)
+        ax.plot([p[0] for p in fc], [p[1] for p in fc], color=color, lw=2, zorder=4)
+
+        lon, lat = cand.location.longitude, cand.location.latitude
+        ax.scatter([lon], [lat], marker="*", s=200, c=color, edgecolor="black", linewidth=1, zorder=5)
+        ax.annotate(
+            f"Rank {cand.rank}\n{cand.pond_footprint.area_sq_m:.0f} m² pond",
+            (lon, lat), textcoords="offset points", xytext=(8, 8), fontsize=9,
+            fontweight="bold", color=color,
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor=color, alpha=0.9),
+        )
+
+    src = f"{source_label} — " if source_label else ""
+    ax.set_title(
+        f"{src}{len(candidates)} ranked pond candidates\n"
+        f"Filled = pond footprint, dashed = catchment, blue = existing drainage",
+        fontsize=10,
+    )
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", dpi=140)
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()

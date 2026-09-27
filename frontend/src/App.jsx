@@ -163,6 +163,8 @@ export default function App() {
                 <li><span className="swatch fill" /> filled shape = the pond itself</li>
                 <li><span className="swatch dash" /> dashed outline = its catchment (land draining in)</li>
                 <li><span className="swatch dot" /> dot = suggested pond location</li>
+                <li><span className="swatch water" /> blue = existing drainage / river (avoided)</li>
+                <li>faint lines = elevation contours</li>
               </ul>
             </div>
           )}

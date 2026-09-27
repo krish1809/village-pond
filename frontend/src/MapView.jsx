@@ -159,6 +159,14 @@ export default function MapView({ results, selectedRank, onSelectRank, onBboxDra
       })
     }
 
+    // Existing drainage / river network (blue) — the watercourses ponds avoid.
+    if (results.drainage) {
+      L.geoJSON(results.drainage, {
+        style: { color: '#1e6fd6', weight: 0, fillColor: '#1e6fd6', fillOpacity: 0.35 },
+        interactive: false,
+      }).addTo(layerGroup)
+    }
+
     results.candidates.forEach((cand) => {
       const color = rankColor(cand.rank)
       const isSelected = cand.rank === selectedRank

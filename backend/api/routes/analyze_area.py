@@ -15,7 +15,10 @@ geometry_utils, rainfall_api, and water_volume.
 import time
 from typing import List
 
-from fastapi import APIRouter, HTTPException
+import numpy as np
+from scipy.ndimage import binary_dilation
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 
 from models.schemas import (
     AnalysisMetadata,
@@ -29,6 +32,8 @@ from models.schemas import (
     PondFootprint,
     PondLocation,
     RainfallInfo,
+    StorageInfo,
+    StoragePoint,
     SuitabilityFactors,
     WaterVolume,
 )
@@ -39,6 +44,7 @@ from modules import (
     geometry_utils,
     pond_locator,
     rainfall_api,
+    visualization,
     water_volume,
 )
 
@@ -60,7 +66,10 @@ router = APIRouter()
     ),
     tags=["Catchment Analysis"],
 )
-async def analyze_area(req: AnalyzeAreaRequest):
+async def analyze_area(
+    req: AnalyzeAreaRequest,
+    format: str = Query("json", description="'json' (default) or 'image' for a rendered PNG map"),
+):
     """Analyse a selected region and return ranked pond sites with water volumes."""
     t_start = time.time()
     notes: List[str] = []
@@ -101,6 +110,22 @@ async def analyze_area(req: AnalyzeAreaRequest):
         raise HTTPException(status_code=500, detail=f"Flow computation error: {exc}")
     notes.extend(flow.notes)
 
+    # --- Existing drainage / river network (the cells excluded from pond siting) ---
+    # Same definition pond_locator uses: cells above the channel flow-accumulation
+    # percentile, plus a small buffer. Returned as GeoJSON so the map can show the
+    # existing watercourses the ponds are deliberately kept out of.
+    drainage_geojson = None
+    try:
+        chan_threshold = np.percentile(flow.flow_acc, pond_locator.CHANNEL_FLOW_ACC_PERCENTILE)
+        channel_mask = binary_dilation(
+            flow.flow_acc > chan_threshold, iterations=pond_locator.CHANNEL_BUFFER_CELLS
+        )
+        if channel_mask.any():
+            chan_poly = geometry_utils.catchment_polygon(channel_mask, grid.meta)
+            drainage_geojson = geometry_utils.multipolygon_to_geojson(chan_poly)
+    except Exception:
+        drainage_geojson = None  # display-only; never fail the analysis over it
+
     # --- Rank candidate pond sites ---
     # First pass is strict (reject sites whose pond can't be bounded). If the
     # terrain is gentle enough that nothing passes at this DEM resolution, fall
@@ -138,6 +163,7 @@ async def analyze_area(req: AnalyzeAreaRequest):
     cell_size_m = min(grid.meta.cell_lon, grid.meta.cell_lat) * 111_000
     cell_area_m2 = cell_size_m ** 2
     runoff_coeff = req.runoff_coefficient or water_volume.DEFAULT_RUNOFF_COEFFICIENT
+    smooth_cell_deg = min(grid.meta.cell_lon, grid.meta.cell_lat)
 
     # --- Per-candidate: catchment, footprint, geometry, water volume ---
     results: List[AreaCandidateResult] = []
@@ -146,8 +172,12 @@ async def analyze_area(req: AnalyzeAreaRequest):
         try:
             catch = catchment.delineate_from_flow(flow, cand.row, cand.col)
             catch_poly = geometry_utils.catchment_polygon(catch.mask, grid.meta)
+            # Area/perimeter are measured on the exact cell-union polygon (accurate);
+            # the boundary sent to the map is smoothed so it doesn't look blocky.
             catch_area_m2, catch_perim_m = geometry_utils.catchment_geometry(catch_poly, cand.lon, cand.lat)
-            catch_geojson = geometry_utils.polygon_to_geojson(catch_poly)
+            catch_geojson = geometry_utils.polygon_to_geojson(
+                geometry_utils.smooth_polygon(catch_poly, smooth_cell_deg)
+            )
 
             footprint_mask, footprint_info = pond_locator.compute_pond_footprint(
                 grid.dem, cand.row, cand.col
@@ -161,7 +191,9 @@ async def analyze_area(req: AnalyzeAreaRequest):
             footprint_area_m2, footprint_perim_m = geometry_utils.catchment_geometry(
                 footprint_poly, cand.lon, cand.lat
             )
-            footprint_geojson = geometry_utils.polygon_to_geojson(footprint_poly)
+            footprint_geojson = geometry_utils.polygon_to_geojson(
+                geometry_utils.smooth_polygon(footprint_poly, smooth_cell_deg)
+            )
 
             vol = water_volume.compute(
                 catchment_area_m2=catch_area_m2,
@@ -171,6 +203,10 @@ async def analyze_area(req: AnalyzeAreaRequest):
                 water_level_m=footprint_info["water_level_m"],
                 cell_area_m2=cell_area_m2,
                 runoff_coefficient=runoff_coeff,
+            )
+
+            required_depth, holds_runoff, curve = water_volume.storage_curve(
+                grid.dem, cand.row, cand.col, catch.mask, cell_area_m2, vol.annual_runoff_m3,
             )
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Analysis error for rank {cand.rank}: {exc}")
@@ -211,14 +247,27 @@ async def analyze_area(req: AnalyzeAreaRequest):
                 runoff_coefficient=vol.runoff_coefficient,
                 annual_rainfall_mm=rain.annual_rainfall_mm,
             ),
+            storage=StorageInfo(
+                required_depth_m=required_depth,
+                holds_annual_runoff=holds_runoff,
+                curve=[StoragePoint(**p) for p in curve],
+            ),
         ))
 
     t_elapsed = time.time() - t_start
     notes.append(f"Total processing time: {t_elapsed:.2f}s")
 
+    if format == "image":
+        try:
+            png = visualization.render_area_png(grid, drainage_geojson, results, source_label=dem_source)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Image rendering error: {exc}")
+        return Response(content=png, media_type="image/png")
+
     return AnalyzeAreaResponse(
         candidates=results,
         contours=[ContourFeature(**c) for c in contour_features],
+        drainage=drainage_geojson,
         rainfall=RainfallInfo(
             annual_rainfall_mm=rain.annual_rainfall_mm,
             source=rain.source,
