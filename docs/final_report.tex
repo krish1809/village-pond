@@ -382,6 +382,9 @@ storage capacity is read straight off the DEM as $\sum(w-z_i)A_{\text{cell}}$; a
 the water that can actually be collected is the smaller of the two,
 $\min(V_{\text{runoff}},V_{\text{capacity}})$. I also build a stage--area--volume
 curve and report the depth at which the stored volume first reaches a year's runoff.
+The suitability score is what \emph{finds} the candidate sites, but the list the user
+sees is then ordered best-first by this collectable volume, so Rank~1 is the site
+that actually harvests the most water rather than just the highest-scoring terrain.
 
 %% =====================================================================
 \section{Implementation}

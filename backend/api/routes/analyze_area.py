@@ -256,6 +256,17 @@ async def analyze_area(
             ),
         ))
 
+    # Candidates were selected by terrain suitability, but for the user the most
+    # useful pond is the one that collects the most water. Present the results
+    # best-first by collectable volume and renumber the ranks, so Rank 1 is the
+    # site with the largest catchment/volume, not just the highest terrain score.
+    results.sort(
+        key=lambda r: (r.water_volume.expected_collectable_m3, r.catchment.area_sq_m),
+        reverse=True,
+    )
+    for i, r in enumerate(results, start=1):
+        r.rank = i
+
     t_elapsed = time.time() - t_start
     notes.append(f"Total processing time: {t_elapsed:.2f}s")
 

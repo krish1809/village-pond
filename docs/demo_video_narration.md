@@ -28,7 +28,7 @@ because the system never places a pond inside a watercourse.
 
 (point at contours, drainage, and the pond markers)
 
-The sites are ranked best-first. Rank 1 has a catchment of about six thousand square
+The sites are ranked best-first by the water they can collect. Rank 1 has a catchment of about six thousand square
 metres feeding a pond of around two thousand six hundred, and it can collect roughly
 nineteen hundred cubic metres of water a year. Ranks 2 and 3 are smaller sites on
 smaller catchments.
