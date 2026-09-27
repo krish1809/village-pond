@@ -5,9 +5,33 @@
 
 ---
 
-## Current Phase: Phase 2 — Contour Map Catchment Analysis API
+## Current Phase: Phase 3 — Web front-end, map-region analysis, water volume
 
 ### Status: 🔨 IN PROGRESS
+
+Phase 3 is **additive** — Phase 2's `/analyzeContour` (upload a contour file) is
+untouched. Phase 3 adds:
+
+- **`POST /analyzeArea`** — the user selects a region on a map; the backend fetches
+  a DEM for that bbox from the **Open-Meteo elevation API**, runs the same Phase 2
+  hydrology pipeline, then adds an **expected water volume** estimate from live
+  **Open-Meteo historical rainfall** (with an offline fallback).
+- **React + Leaflet front-end** (`frontend/`) — satellite map, draw-a-rectangle
+  area selection, and pond/catchment/volume results overlaid on the map. Built to
+  `frontend/dist` and served as static files by the same FastAPI process, so the
+  whole system is one URL (`scripts/build.sh`).
+
+New backend modules: `elevation_api.py` (DEM from Open-Meteo, batched + cached +
+rate-limit-resilient), `rainfall_api.py` (mean annual rainfall + fallback),
+`water_volume.py` (runoff vs. basin-capacity → collectable volume). New route:
+`api/routes/analyze_area.py`. Reuses `catchment.py`, `pond_locator.py`,
+`geometry_utils.py` unchanged.
+
+Water volume model:
+- Annual runoff delivered by catchment: `V = C · P · A_catchment` (Rational method).
+- Basin storage capacity: `Σ (water_level − cell_elev) · cell_area` over the pond
+  flood-fill footprint (true basin volume from the DEM, not flat area×depth).
+- Expected collectable = `min(runoff, capacity)`.
 
 ---
 

@@ -17,13 +17,16 @@ import io
 from typing import List
 
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")  # no display backend needed on a server
-import matplotlib.pyplot as plt
 from scipy.ndimage import binary_dilation
 
 from modules import pond_locator
 from shapely.geometry import MultiPolygon
+
+# NOTE: matplotlib is imported lazily inside render_analysis_png(), not at module
+# top level. It's only needed for the optional PNG output of /analyzeContour, and
+# it pulls in ~tens of MB of RAM on import. The lab systems cap the container at
+# 512 MB, so keeping matplotlib out of the startup import path (and out of the
+# /analyzeArea request path, which never renders a PNG) leaves more headroom.
 
 
 def _largest_polygon(geom):
@@ -58,6 +61,12 @@ def render_analysis_png(
     -------
     PNG image bytes.
     """
+    # Lazy import (see module note): keeps matplotlib out of RAM until a PNG is
+    # actually requested, which matters on the memory-capped lab systems.
+    import matplotlib
+    matplotlib.use("Agg")  # no display backend needed on a server
+    import matplotlib.pyplot as plt
+
     channel_threshold = np.percentile(flow.flow_acc, pond_locator.CHANNEL_FLOW_ACC_PERCENTILE)
     channel_mask = flow.flow_acc > channel_threshold
     channel_buffered = binary_dilation(channel_mask, iterations=pond_locator.CHANNEL_BUFFER_CELLS)

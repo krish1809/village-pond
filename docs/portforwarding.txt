@@ -1,0 +1,42 @@
+Village Pond — Lab systems & port forwarding
+============================================
+
+Four systems are provided, all reached over SSH to the same host (10.1.75.79)
+on different ports. (The login password is NOT stored here — it is a shared lab
+credential kept out of the repo.)
+
+  sys1   ssh -p 2225 student@10.1.75.79
+  sys2   ssh -p 2226 student@10.1.75.79
+  sys3   ssh -p 2227 student@10.1.75.79
+  sys4   ssh -p 2228 student@10.1.75.79
+
+Port forwarding
+---------------
+Each system runs the app on INTERNAL port 5000. That port is forwarded so it is
+reachable EXTERNALLY on port 5228:
+
+  internal  0.0.0.0:5000   --->   external  http://10.1.75.79:5228
+
+So: always bind the server to port 5000; users reach it at :5228.
+
+  Web app :  http://10.1.75.79:5228/
+  API docs:  http://10.1.75.79:5228/docs
+  Health  :  http://10.1.75.79:5228/health
+
+Runtime notes
+-------------
+- Containers are memory-limited (cgroup memory.max = 512 MB). Storage is small
+  too. Do NOT create a virtualenv — use the pre-installed conda Python
+  (/opt/conda/bin/python3), which already has the dependencies. The system
+  python3 does NOT have them.
+- The compiled front-end is committed under backend/static, so Node/npm is not
+  needed on the systems.
+- Other users' processes run on these shared boxes — only ever stop OUR own
+  server (the process listening on port 5000), never a blanket kill.
+
+Deploy / refresh (run ON a system, from the repo root)
+------------------------------------------------------
+  cd ~/village-pond
+  bash scripts/deploy_on_system.sh      # git pull, restart uvicorn on :5000
+
+The repo is cloned at /home/student/village-pond on the systems.

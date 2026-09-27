@@ -8,8 +8,11 @@ venv/
 
 # Node / frontend
 node_modules/
-dist/
+frontend/dist/
 .vite/
+# NOTE: backend/static/ (the compiled front-end) IS committed on purpose, so the
+# low-storage lab systems can serve the web app without installing Node/npm.
+# Regenerate it with scripts/build.sh.
 
 # Docker
 *.log
