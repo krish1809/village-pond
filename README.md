@@ -3,6 +3,12 @@
 AI-assisted web application to help village administrators identify suitable
 locations for pond construction using terrain, catchment, and rainfall analysis.
 
+## Links
+- **Demo video:** https://youtu.be/RUvhIV-HOOs
+- **Live app:** http://10.1.75.79:5228/
+- **API docs:** http://10.1.75.79:5228/docs
+- **Final report:** [docs/final_report.pdf](docs/final_report.pdf)
+
 ## Status
 - [x] Phase 1 — High-Level Design (HLD)
 - [x] Phase 2 — Contour catchment analysis API (`POST /analyzeContour`)
