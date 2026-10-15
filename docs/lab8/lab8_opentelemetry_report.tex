@@ -1,7 +1,11 @@
 \documentclass[11pt]{article}
 
 \usepackage[a4paper,margin=0.9in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
 \usepackage{graphicx}
+\usepackage{float}
+\usepackage{needspace}
 \usepackage{booktabs}
 \usepackage{tabularx}
 \usepackage{xcolor}
@@ -12,6 +16,7 @@
 
 \setlength{\parskip}{0.45em}
 \setlength{\parindent}{0pt}
+\setlength{\emergencystretch}{2em}
 \setlist{nosep,leftmargin=1.3em}
 
 \definecolor{cApp}{HTML}{1F5C99}
@@ -22,7 +27,7 @@
 % A screenshot slot: shows the image once it exists in figures/, otherwise a
 % framed note saying which screenshot belongs there.
 \newcommand{\shot}[3]{%
-  \begin{figure}[htbp]
+  \begin{figure}[H]
     \centering
     \IfFileExists{figures/#1}%
       {\includegraphics[width=\linewidth]{figures/#1}}%
@@ -105,7 +110,7 @@ through sys2's forwarded port.}
 \end{figure}
 
 I kept the observability code separate from the analysis code. A single new module,
-\texttt{backend/telemetry.py}, installs the OpenTelemetry SDK once when the app
+\texttt{backend/\allowbreak telemetry.py}, installs the OpenTelemetry SDK once when the app
 starts. The rest of the code only talks to the OpenTelemetry \emph{API}
 (\texttt{opentelemetry.trace} and \texttt{opentelemetry.metrics}), which does
 nothing until the SDK is installed. This is the pattern OpenTelemetry recommends for
@@ -215,39 +220,101 @@ quiet, since it logs every request URL --- including the one with the API key.
 All screenshots below are from the deployed application on sys4, exporting to
 OpenObserve on sys2. The traffic was a mix of real analyses: contour-file uploads,
 map-area analyses (one fresh download and several cached repeats), PNG renders and
-deliberately invalid requests.
+deliberately invalid requests, plus one analysis run from the browser at the end.
 
-\shot{traces_list.png}{Traces view filtered to \texttt{village-pond-api}. Each row
-is one request. The durations immediately separate the one analysis that had to
-download a fresh elevation model (about 14.6\,s) from the cached repeats of the
-same area (about 0.15\,s) and the contour uploads (under 1\,s).}{fig:traces}
+\needspace{12\baselineskip}
+\subsection*{Traces}
 
-\shot{trace_waterfall.png}{Waterfall of the slow \texttt{POST /analyzeArea} request.
-The \texttt{pond.dem\_fetch} span and its child client span \texttt{GET
-opentopography globaldem} fill almost the whole bar (13.4\,s of 14.6\,s); the
-rainfall lookup takes about 1\,s and every computation stage is a thin sliver at
-the end.}{fig:waterfall}
+\shot{traces_list.png}{Traces view in OpenObserve, filtered with
+\texttt{service\_name='village-pond-api'} and sorted by duration. The panels at the
+top show request rate, errors and a duration heat map over the last hour; below,
+each row is one request with its span count. 47 traces were recorded. The
+durations separate the request types at a glance: the one area analysis that had to
+download a fresh elevation model (14.59\,s, 12 spans), area analyses that also
+rendered a PNG map (0.73--1.42\,s, 11 spans), contour-file uploads (0.77--0.97\,s,
+8 spans) and cached repeats of the same area (0.17--0.25\,s, 10 spans). The five
+``error traces'' are the deliberately invalid requests, whose
+\texttt{pond.dem\_fetch} span recorded the bounding-box exception.}{fig:traces}
 
-\shot{span_attributes.png}{Attributes of one span in the same trace. The client span
-records the external host, path, DEM type and HTTP status --- but not the API key ---
-and the candidate spans record each pond's catchment area, pond area, collectable
-volume and which limit (runoff or basin capacity) binds.}{fig:attrs}
+\shot{trace_waterfall.png}{Waterfall of the slowest trace, the uncached
+\texttt{POST /analyzeArea} (trace \texttt{133e6f54\ldots}). The tree shows the
+server span, the nine pipeline-stage spans as its children, and the two
+\emph{client} spans for the external services, labelled with their peer service
+(\texttt{opentopography}, \texttt{open-meteo}). \texttt{pond.dem\_fetch} and its
+child \texttt{GET opentopography globaldem} fill almost the whole bar (13.38\,s of
+14.59\,s); the rainfall lookup takes 1.02\,s, and contours, flow routing, drainage,
+ranking and the three candidate spans are thin slivers totalling about
+0.16\,s.}{fig:waterfall}
 
-\shot{logs.png}{Logs view for the application. Every record has a severity and a
-\texttt{trace\_id}; the invalid request appears as a \texttt{WARNING} with
-\texttt{outcome=invalid\_request}, and the successful analyses log their headline
-result.}{fig:logs}
+\shot{span_attributes.png}{Attributes of the \texttt{GET opentopography globaldem}
+client span from the same trace. It records the HTTP method, the server
+(\texttt{portal.opentopography.org}), the DEM type (\texttt{SRTMGL1}), the response
+status (200) and body size (26\,464 bytes) and the duration (13.37\,s). Resource
+attributes added by the SDK identify where the span came from:
+\texttt{service\_name=village-pond-api}, version 0.3.0,
+\texttt{deployment\_environment\_name=lab-sys4} and host \texttt{stu37\_sys4}.
+There is no URL query string in the span, so the API key never leaves the
+server.}{fig:attrs}
 
-\shot{metrics_stages.png}{Average duration of each pipeline stage, computed in PromQL
-from the \texttt{pond.pipeline.stage.duration} histogram. The elevation download
-dominates; the terrain computation stages stay in the tens of
-milliseconds.}{fig:stages}
+\needspace{12\baselineskip}
+\subsection*{Logs}
 
-\shot{metrics_memory.png}{Resident memory of the API process and the container's
-memory against its 512\,MB limit, from the custom gauges.}{fig:memory}
+\shot{logs.png}{Logs view, queried with SQL over the \texttt{default} log stream.
+The bar chart shows log volume per minute split by severity (INFO in blue, WARN in
+orange); 121 records were stored. Every analysis writes the same three lines ---
+\emph{request received}, \emph{DEM ready} (grid size and elevation range) and
+\emph{analysis complete} (number of sites, time taken and the rank-1 collectable
+volume) --- and each carries the \texttt{trace\_id} of its request. The orange row is
+a rejected request with an invalid bounding box.}{fig:logs}
 
-\shot{metrics_outcomes.png}{Analyses by endpoint and outcome, from the
-\texttt{pond.analyses} counter, alongside the DEM cache hit/miss counts.}{fig:outcomes}
+\shot{log_details.png}{The WARN record from Figure~\ref{fig:logs} expanded. Besides
+the message it holds the structured attributes I attached
+(\texttt{outcome=invalid\_request}, \texttt{status\_code=422}), the source location
+added by the logging bridge (\texttt{analyze\_area.py}, line 92), the resource
+attributes, and the \texttt{trace\_id}/\texttt{span\_id} of the request. The
+\emph{View Trace} button uses that ID to open the trace the log line belongs
+to.}{fig:logdetail}
+
+\needspace{12\baselineskip}
+\subsection*{Metrics}
+
+\shot{metrics_stages.png}{Average duration of each pipeline stage, computed in
+PromQL as \texttt{sum by (stage)} of the histogram's \texttt{\_sum} divided by its
+\texttt{\_count}. Because the histogram is cumulative, each line is a running average
+since the server started. \texttt{dem\_fetch} (red) starts at about 3.3\,s, when the
+one 13.4\,s download is averaged with only a few cached requests, and falls to
+0.38\,s as cache hits accumulate. \texttt{render\_png} (teal, about 0.83\,s) ends up
+as the slowest stage on average, followed by \texttt{parse\_contours} (about 0.4\,s).
+All the terrain computation stages stay below 0.08\,s.}{fig:stages}
+
+\shot{metrics_memory.png}{Resident memory of the API process
+(\texttt{process\_memory\_rss}, teal) against the container's hard limit
+(\texttt{container\_memory\{kind="limit"\}}, red, 512\,MiB), both from the custom
+observable gauges. RSS starts at about 150\,MiB after a restart and steps up to
+210--250\,MiB as requests arrive, with the largest jumps coming from PNG renders. It
+then stays flat, which shows that the in-memory caches are not
+leaking.}{fig:memory}
+
+\shot{metrics_outcomes.png}{The \texttt{pond.analyses} counter grouped by endpoint
+and outcome (\texttt{sum by (endpoint, outcome)}). Each step is a request. By the end
+of the test run there were 30 successful area analyses, 10 successful contour
+analyses and 5 area requests rejected as \texttt{invalid\_request}. There were no
+\texttt{upstream\_error} outcomes.}{fig:outcomes}
+
+\needspace{12\baselineskip}
+\subsection*{From the web page to the trace}
+
+\shot{app_trace_id.png}{The application on sys4 after analysing the sample area
+from the browser (84$\times$134 elevation grid, 12.4\,s, three suggested sites). The
+results panel shows the request's trace ID,
+\texttt{a09f4e7360c43cb47c4918a744a1ad31}, under the DEM and rainfall
+summary.}{fig:apptrace}
+
+\shot{app_trace_lookup.png}{The same trace ID opened in OpenObserve. The request took
+12.43\,s, and 12.21\,s of that was the OpenTopography download. The rainfall span
+took only 122\,$\mu$s this time, because the rainfall for this location was already
+in the cache. The trace has 11 spans rather than 12, because a cached rainfall
+lookup makes no outgoing call and so has no client span.}{fig:applookup}
 
 \section{What the data told me}
 
@@ -258,8 +325,13 @@ pond search was the expensive part. The trace says otherwise: \textbf{92\% of th
 request is waiting for OpenTopography}, the rainfall archive adds another second,
 and all of my own computation together takes roughly 0.15\,s. Repeating the same
 request returned in about 0.16\,s, because the elevation model was served from the
-in-memory cache (the \texttt{dem.cache\_hit} attribute and the
-\texttt{pond.dem.requests} counter confirm it). So the caching I added in the
+in-memory cache (the \texttt{dem.cache\_hit} attribute confirms it, and over the
+whole test run the \texttt{pond.dem.requests} counter recorded 29 cache hits against
+a single miss). Figure~\ref{fig:stages} shows the same thing: the running average of
+\texttt{dem\_fetch} falls from 3.3\,s to under 0.4\,s as cached requests arrive.
+That figure also taught me something about reading metrics. An average over the
+whole run hides the one slow request, so the trace is what shows how slow an uncached
+request really is. So the caching I added in the
 previous assignment was the right optimisation, and the place to spend any further
 effort is the external download, not the algorithms.
 
@@ -285,11 +357,15 @@ Span & Duration (ms) \\
 \end{table}
 
 \paragraph{Memory headroom.}
-The memory gauges showed the API starting at about 156\,MB and rising to about
-247\,MB once a PNG had been rendered, because matplotlib is only loaded on the first
-image request. That is a concrete justification for loading it lazily, and it shows
-how close an always-loaded plotting library would bring the service to the 512\,MB
-limit it shares with another process on sys4.
+The memory gauges (Figure~\ref{fig:memory}) showed the API starting at about
+150\,MiB and rising to about 250\,MiB once a PNG had been rendered, because
+matplotlib is only loaded on the first image request. That is a concrete
+justification for loading it lazily. It also shows how close an always-loaded
+plotting library would bring the service to the 512\,MiB limit, which it shares
+with another lab's Node.js server on sys4. The container gauge's \texttt{used}
+series read about 440\,MiB at the end of the run. That figure counts the other
+process and reclaimable file cache as well, but it still shows that the box has
+little room to spare.
 
 \paragraph{Failures are visible instead of silent.}
 Some failures in this app are handled gracefully on purpose, which normally makes
@@ -304,7 +380,10 @@ from a server fault.
 \paragraph{Debugging a single request.}
 The most useful workflow turned out to be the simplest: take the trace ID shown on
 the web page (or in the \texttt{X-Trace-Id} header), search for it in OpenObserve,
-and get both the full span waterfall and every log line from that request. Metrics
+and get both the full span waterfall and every log line from that request
+(Figures~\ref{fig:apptrace} and~\ref{fig:applookup}). Going the other way, the
+\emph{View Trace} button on a log record (Figure~\ref{fig:logdetail}) jumps from a
+warning to the request that caused it. Metrics
 answer ``is something wrong and how often?''; the trace for one request answers
 ``where exactly and why?''; and the logs carry the human-readable detail. Having all
 three tied together by the trace ID is what makes OpenTelemetry more than a logging
