@@ -1,0 +1,351 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=0.9in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds}
+\usepackage[colorlinks=true,linkcolor=blue!60!black,urlcolor=blue!60!black]{hyperref}
+
+\setlength{\parskip}{0.45em}
+\setlength{\parindent}{0pt}
+\setlist{nosep,leftmargin=1.3em}
+
+\definecolor{cApp}{HTML}{1F5C99}
+\definecolor{cOO}{HTML}{0E7C66}
+\definecolor{cExt}{HTML}{9E3B2E}
+\definecolor{cUser}{HTML}{4B5563}
+
+% A screenshot slot: shows the image once it exists in figures/, otherwise a
+% framed note saying which screenshot belongs there.
+\newcommand{\shot}[3]{%
+  \begin{figure}[htbp]
+    \centering
+    \IfFileExists{figures/#1}%
+      {\includegraphics[width=\linewidth]{figures/#1}}%
+      {\fbox{\parbox[c][4.5cm][c]{0.92\linewidth}{\centering\small\textit{Screenshot pending:} \texttt{\detokenize{figures/#1}}}}}
+    \caption{#2}
+    \label{#3}
+  \end{figure}}
+
+\title{\vspace{-1.2em}\textbf{Lab 8: OpenTelemetry}\\[0.2em]
+\large Observability for the AI-based Village Pond Planning System}
+\author{Rishi Kharya}
+\date{\today}
+
+\begin{document}
+\maketitle
+\vspace{-1em}
+
+\begin{center}
+\fbox{\parbox{0.92\linewidth}{\small
+\textbf{Application (sys4):}~\url{http://10.1.75.79:5228/}\\[1pt]
+\textbf{Observability backend -- OpenObserve (sys2):}~\url{http://10.1.75.79:5226/}\\[1pt]
+\textbf{Source code:}~\url{https://github.com/krish1809/village-pond} \quad(\texttt{backend/telemetry.py})
+}}
+\end{center}
+
+\section{What I set out to do}
+
+For this lab I added OpenTelemetry to my Assignment~1 project, the Village Pond
+Planning System. It is a FastAPI service that takes an area selected on a map,
+downloads an elevation model for it from OpenTopography, routes water across the
+terrain, ranks candidate pond sites, looks up rainfall from Open-Meteo and works out
+how much water each pond could collect. That is a good fit for observability: a
+single request crosses two external services and around ten processing stages,
+and when it is slow or fails, the plain request log does not say why.
+
+The goal was to capture all three kinds of telemetry --- \textbf{traces},
+\textbf{metrics} and \textbf{logs} --- from the real running application on the lab
+server, send them to a proper backend, and then actually use what was collected to
+explain how the system behaves.
+
+\section{How the implementation is organised}
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[
+  font=\sffamily,
+  box/.style={rounded corners=4pt, align=center, inner sep=6pt, text=white, minimum height=12mm},
+  sub/.style={rounded corners=3pt, align=center, inner sep=3pt, fill=white, text=black, font=\footnotesize\sffamily, text width=3.3cm},
+  arr/.style={-{Stealth[length=2.4mm]}, thick, gray!60},
+  lab/.style={font=\footnotesize\sffamily, text=black, align=center},
+]
+\node[box, fill=cUser, text width=3.2cm] (user) {\textbf{Browser}\\[1pt]\small map UI \& OpenObserve UI};
+
+\node[text=white, font=\bfseries\sffamily\small, right=18mm of user, yshift=11mm] (t4) {sys4 --- Village Pond API};
+\node[sub, below=1.5mm of t4] (fast) {FastAPI app + routes\\(auto-instrumented)};
+\node[sub, below=2mm of fast] (sdk) {OTel SDK: tracer, meter \& logger providers, batch export};
+\begin{scope}[on background layer]
+\node[fit=(t4)(fast)(sdk), box, fill=cApp, inner sep=6pt] (sys4) {};
+\end{scope}
+
+\node[text=white, font=\bfseries\sffamily\small, right=34mm of t4] (t2) {sys2 --- OpenObserve};
+\node[sub, below=1.5mm of t2] (ingest) {OTLP/HTTP ingest\\(/api/default/v1/\ldots)};
+\node[sub, below=2mm of ingest] (store) {storage + search UI\\(logs, traces, metrics)};
+\begin{scope}[on background layer]
+\node[fit=(t2)(ingest)(store), box, fill=cOO, inner sep=6pt] (sys2) {};
+\end{scope}
+
+\node[box, fill=cExt, text width=4.2cm, below=12mm of sys4] (ext) {\textbf{External APIs}\\[1pt]\small OpenTopography (DEM), Open-Meteo (rainfall)};
+
+\draw[arr] (user.east) -- node[lab, above]{:5228} (user.east -| sys4.west);
+\draw[arr] (sys4.east |- fast) -- node[lab, above]{OTLP/HTTP}node[lab, below]{172.17.0.27:5000} (sys2.west |- fast);
+\draw[arr] (sys4.south) -- node[lab, right]{client spans} (ext.north);
+\draw[arr] (user.north) |- node[lab, pos=0.75, above]{:5226 (OpenObserve UI)} ([yshift=7mm]sys2.north) -- (sys2.north);
+\end{tikzpicture}}
+\caption{Where the telemetry comes from and where it goes. The app on sys4 exports
+over the internal lab network to OpenObserve on sys2; I view the data in the browser
+through sys2's forwarded port.}
+\label{fig:arch}
+\end{figure}
+
+I kept the observability code separate from the analysis code. A single new module,
+\texttt{backend/telemetry.py}, installs the OpenTelemetry SDK once when the app
+starts. The rest of the code only talks to the OpenTelemetry \emph{API}
+(\texttt{opentelemetry.trace} and \texttt{opentelemetry.metrics}), which does
+nothing until the SDK is installed. This is the pattern OpenTelemetry recommends for
+instrumenting existing code, and it had a practical benefit: my 71 existing tests
+never install the SDK, so they ran unchanged.
+
+Everything is exported as \textbf{OTLP over HTTP} and configured only through the
+standard environment variables (\texttt{OTEL\_EXPORTER\_OTLP\_ENDPOINT},
+\texttt{OTEL\_EXPORTER\_OTLP\_HEADERS}, \texttt{OTEL\_SERVICE\_NAME}). The code has
+no idea which backend is on the other end, so OpenObserve could be swapped for
+Jaeger, Grafana Tempo or an OpenTelemetry Collector without touching the
+application. If no endpoint is set, telemetry simply stays off.
+
+\subsection*{Deployment on the lab systems}
+The lab gave us four small containers, each capped at 512\,MB of RAM, with one port
+per container forwarded to the outside. The app already ran on sys4. I put the
+observability backend on \textbf{sys2}, the container with the most free memory and
+an unused forwarded port, so the two would not compete for sys4's 512\,MB. The
+containers share an internal Docker network, so sys4 exports straight to
+\texttt{172.17.0.27:5000}, while I open the OpenObserve UI from my laptop through
+\url{http://10.1.75.79:5226/}. OpenObserve is a single binary that ingests and
+displays all three signals behind one port, which is exactly what a one-port,
+low-memory container needs. I started it with small worker and cache limits (the
+container reports 120 CPUs, and the defaults size themselves from that). It started at
+about 200\,MB and, with the test traffic flowing in, sys2's container stayed at roughly
+290\,MB of real (anonymous) memory out of its 512\,MB.
+
+\section{Tools, libraries and backend}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Component & Role \\
+\midrule
+\texttt{opentelemetry-api} / \texttt{-sdk} 1.45.1 & Tracer, meter and logger providers; batch span and log processors; periodic metric reader \\
+\texttt{opentelemetry-exporter-otlp-proto-http} 1.45.1 & Sends spans, metrics and log records as OTLP/protobuf over HTTP \\
+\texttt{opentelemetry-instrumentation-fastapi} 0.66b1 & Automatic server span and HTTP metrics for every request \\
+OpenObserve v1.1.0 (on sys2) & Backend that stores, searches and visualises logs, traces and metrics; supports SQL and PromQL queries \\
+FastAPI + uvicorn on Python 3.14 (sys4) & The instrumented Village Pond API \\
+\bottomrule
+\end{tabularx}
+\caption{Libraries and services used.}
+\end{table}
+
+\section{What each signal captures}
+
+\paragraph{Traces.}
+The FastAPI instrumentation creates one server span per request (method, route,
+status code, duration). Inside it I open a child span for every stage of the
+pipeline using a small helper, \texttt{telemetry.stage()}: the elevation download,
+contour generation, flow routing, drainage extraction, site ranking, the rainfall
+lookup, one span per candidate pond, and the PNG render when an image is requested.
+Each span carries attributes that matter for this domain, such as the grid size,
+whether the elevation model came from the cache, the rainfall source, and each
+candidate's catchment area, pond area and collectable volume. The two calls to
+external services get their own \emph{client} spans. I created these by hand instead
+of auto-instrumenting \texttt{httpx}, because the OpenTopography URL carries my API
+key in its query string; the spans record only the host, path, DEM type and response
+status, so the key never reaches the backend. Every response also returns its trace
+ID in an \texttt{X-Trace-Id} header, and the web page shows it under the results, so
+a slow request seen in the browser can be looked up directly.
+
+\paragraph{Metrics.}
+Metrics are pushed every 10 seconds. The FastAPI instrumentation provides HTTP
+request duration, request and response size and active requests. I added the
+application-specific instruments in Table~\ref{tab:metrics}. The memory gauges were
+not an afterthought: with a 512\,MB hard limit, memory is the resource most likely
+to take this service down.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabularx}{\linewidth}{@{}llX@{}}
+\toprule
+Instrument & Type & What it tells me \\
+\midrule
+\texttt{pond.analyses} & counter & Analyses per endpoint and outcome (ok, invalid\_request, upstream\_error, error) \\
+\texttt{pond.pipeline.stage.duration} & histogram & Time spent in each pipeline stage \\
+\texttt{pond.dem.requests} & counter & Elevation requests served from the cache vs.\ fetched \\
+\texttt{pond.upstream.errors} & counter & Failures of external services, by service and kind (e.g.\ rate limit) \\
+\texttt{pond.rainfall.lookups} & counter & Rainfall from the live archive vs.\ the offline fallback \\
+\texttt{pond.candidates.found} & histogram & Pond sites returned per analysis \\
+\texttt{pond.collectable\_volume} & histogram & Collectable water volume of suggested ponds, by rank \\
+\texttt{process.memory.rss} & gauge & Resident memory of the API process \\
+\texttt{container.memory} & gauge & Container (cgroup) memory used vs.\ its 512\,MB limit \\
+\bottomrule
+\end{tabularx}
+\caption{Custom metrics added to the application.}
+\label{tab:metrics}
+\end{table}
+
+\paragraph{Logs.}
+The app's Python \texttt{logging} output is bridged to OpenTelemetry with a
+\texttt{LoggingHandler}. I log the events that matter --- request received, DEM
+ready, analysis complete with the headline result, warnings when a request is
+invalid or rainfall falls back to the default, and errors from external services ---
+with structured attributes (bounding box, durations, outcome). Because each record
+is written inside a span, it carries that span's \texttt{trace\_id} and
+\texttt{span\_id} automatically, which is what links a log line to the full trace of
+the request that produced it. I deliberately kept the \texttt{httpx} library logger
+quiet, since it logs every request URL --- including the one with the API key.
+
+\section{Results from the running system}
+
+All screenshots below are from the deployed application on sys4, exporting to
+OpenObserve on sys2. The traffic was a mix of real analyses: contour-file uploads,
+map-area analyses (one fresh download and several cached repeats), PNG renders and
+deliberately invalid requests.
+
+\shot{traces_list.png}{Traces view filtered to \texttt{village-pond-api}. Each row
+is one request. The durations immediately separate the one analysis that had to
+download a fresh elevation model (about 14.6\,s) from the cached repeats of the
+same area (about 0.15\,s) and the contour uploads (under 1\,s).}{fig:traces}
+
+\shot{trace_waterfall.png}{Waterfall of the slow \texttt{POST /analyzeArea} request.
+The \texttt{pond.dem\_fetch} span and its child client span \texttt{GET
+opentopography globaldem} fill almost the whole bar (13.4\,s of 14.6\,s); the
+rainfall lookup takes about 1\,s and every computation stage is a thin sliver at
+the end.}{fig:waterfall}
+
+\shot{span_attributes.png}{Attributes of one span in the same trace. The client span
+records the external host, path, DEM type and HTTP status --- but not the API key ---
+and the candidate spans record each pond's catchment area, pond area, collectable
+volume and which limit (runoff or basin capacity) binds.}{fig:attrs}
+
+\shot{logs.png}{Logs view for the application. Every record has a severity and a
+\texttt{trace\_id}; the invalid request appears as a \texttt{WARNING} with
+\texttt{outcome=invalid\_request}, and the successful analyses log their headline
+result.}{fig:logs}
+
+\shot{metrics_stages.png}{Average duration of each pipeline stage, computed in PromQL
+from the \texttt{pond.pipeline.stage.duration} histogram. The elevation download
+dominates; the terrain computation stages stay in the tens of
+milliseconds.}{fig:stages}
+
+\shot{metrics_memory.png}{Resident memory of the API process and the container's
+memory against its 512\,MB limit, from the custom gauges.}{fig:memory}
+
+\shot{metrics_outcomes.png}{Analyses by endpoint and outcome, from the
+\texttt{pond.analyses} counter, alongside the DEM cache hit/miss counts.}{fig:outcomes}
+
+\section{What the data told me}
+
+\paragraph{Where the time actually goes.}
+Table~\ref{tab:timings} is taken from the trace of the first analysis of the sample
+area on sys4. Before instrumenting I would have guessed that flow routing or the
+pond search was the expensive part. The trace says otherwise: \textbf{92\% of the
+request is waiting for OpenTopography}, the rainfall archive adds another second,
+and all of my own computation together takes roughly 0.15\,s. Repeating the same
+request returned in about 0.16\,s, because the elevation model was served from the
+in-memory cache (the \texttt{dem.cache\_hit} attribute and the
+\texttt{pond.dem.requests} counter confirm it). So the caching I added in the
+previous assignment was the right optimisation, and the place to spend any further
+effort is the external download, not the algorithms.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lr@{}}
+\toprule
+Span & Duration (ms) \\
+\midrule
+\texttt{POST /analyzeArea} (whole request) & 14\,590 \\
+\quad \texttt{pond.dem\_fetch} $\rightarrow$ \texttt{GET opentopography globaldem} & 13\,381 \;(13\,375) \\
+\quad \texttt{pond.rainfall} $\rightarrow$ \texttt{GET open-meteo archive} & 1\,017 \;(1\,016) \\
+\quad \texttt{pond.contours} & 53 \\
+\quad \texttt{pond.flow\_routing} & 46 \\
+\quad \texttt{pond.drainage} & 18 \\
+\quad \texttt{pond.rank\_candidates} & 3 \\
+\quad \texttt{pond.candidate} $\times$3 & 23, 9, 7 \\
+\bottomrule
+\end{tabular}
+\caption{Span durations for one uncached area analysis on sys4.}
+\label{tab:timings}
+\end{table}
+
+\paragraph{Memory headroom.}
+The memory gauges showed the API starting at about 156\,MB and rising to about
+247\,MB once a PNG had been rendered, because matplotlib is only loaded on the first
+image request. That is a concrete justification for loading it lazily, and it shows
+how close an always-loaded plotting library would bring the service to the 512\,MB
+limit it shares with another process on sys4.
+
+\paragraph{Failures are visible instead of silent.}
+Some failures in this app are handled gracefully on purpose, which normally makes
+them invisible. When the rainfall service fails, the app quietly uses a default
+value; I mark that span as an error and log a warning, so a fallback now shows up
+in the traces and in \texttt{pond.rainfall.lookups}. When OpenTopography's free
+quota (50 requests per day) runs out, the \texttt{pond.upstream.errors} counter
+records it with \texttt{kind=rate\_limit}. Invalid requests are counted by outcome
+and logged as warnings with the reason, so a burst of bad input is easy to tell apart
+from a server fault.
+
+\paragraph{Debugging a single request.}
+The most useful workflow turned out to be the simplest: take the trace ID shown on
+the web page (or in the \texttt{X-Trace-Id} header), search for it in OpenObserve,
+and get both the full span waterfall and every log line from that request. Metrics
+answer ``is something wrong and how often?''; the trace for one request answers
+``where exactly and why?''; and the logs carry the human-readable detail. Having all
+three tied together by the trace ID is what makes OpenTelemetry more than a logging
+library.
+
+\section{Problems I ran into}
+
+\begin{itemize}
+\item \textbf{Telemetry lost on restart.} My first version flushed the exporters in
+an \texttt{atexit} hook, but nothing arrived when the server was stopped. Recent
+versions of uvicorn re-raise \texttt{SIGTERM} after shutting down, which kills the
+process before \texttt{atexit} runs. Moving the flush into FastAPI's
+\texttt{lifespan} shutdown fixed it; I verified that the final batches of traces,
+metrics and logs are now sent when the app stops.
+\item \textbf{Noisy traces.} A 6\,MB contour upload produced dozens of tiny ASGI
+\texttt{http receive} spans that buried the pipeline stages. Excluding the
+\texttt{receive}/\texttt{send} sub-spans in the FastAPI instrumentation left a clean
+waterfall of seven meaningful spans.
+\item \textbf{Secrets in telemetry.} Auto-instrumenting the HTTP client would have
+put the OpenTopography API key into span attributes and logs, so I wrote the client
+spans by hand and silenced the \texttt{httpx} logger.
+\item \textbf{Running a backend in 512\,MB.} OpenObserve sized its worker pools from
+the 120 CPUs the container can see, and it refused to start until the admin password
+met its complexity rules. Small explicit limits fixed the first, a stronger password
+the second.
+\end{itemize}
+
+\section{Conclusion}
+
+The Village Pond API now produces traces, metrics and logs through OpenTelemetry,
+exported over OTLP from the lab server to an OpenObserve backend on a second lab
+server, without slowing requests down (export happens in background batches). The
+data was immediately useful: it showed that nearly all of the response time is the
+external elevation download rather than my own code, confirmed that caching removes
+it, quantified the memory cost of rendering images against the 512\,MB limit, and made
+the app's graceful fallbacks visible. Because the instrumentation only depends on the
+OpenTelemetry API and standard OTLP, it stays useful whichever backend is used next.
+
+\paragraph{AI tool usage.} I used Claude while working on this lab, mainly to help set
+up the OpenTelemetry SDK and the OpenObserve deployment and to track down the
+shutdown-flush problem. I reviewed and tested everything and can explain the
+implementation and the results myself.
+
+\end{document}
