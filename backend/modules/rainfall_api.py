@@ -22,7 +22,15 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Dict, List, Optional
 
+import logging
+
 import httpx
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
+
+from telemetry import RAINFALL_LOOKUPS, UPSTREAM_ERRORS, tracer
+
+log = logging.getLogger("village_pond.rainfall_api")
 
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 
@@ -112,7 +120,9 @@ def annual_rainfall(lat: float, lon: float) -> RainfallResult:
     """
     cache_key = (round(lat, 2), round(lon, 2))
     if cache_key in _CACHE:
-        return _CACHE[cache_key]
+        cached = _CACHE[cache_key]
+        RAINFALL_LOOKUPS.add(1, {"source": cached.source, "cache": "hit"})
+        return cached
 
     end_year = date.today().year - 1  # last complete calendar year
     start_year = end_year - YEARS_TO_AVERAGE + 1
@@ -125,18 +135,41 @@ def annual_rainfall(lat: float, lon: float) -> RainfallResult:
         "timezone": "UTC",
     }
 
-    try:
-        resp = httpx.get(ARCHIVE_URL, params=params, timeout=REQUEST_TIMEOUT_S)
-        resp.raise_for_status()
-        daily = resp.json().get("daily", {})
-        times = daily.get("time", [])
-        precip = daily.get("precipitation_sum", [])
-        if not times or not precip:
+    with tracer.start_as_current_span(
+        "GET open-meteo archive",
+        kind=trace.SpanKind.CLIENT,
+        attributes={
+            "http.request.method": "GET",
+            "server.address": "archive-api.open-meteo.com",
+            "url.path": "/v1/archive",
+            "peer.service": "open-meteo",
+            "rainfall.years_requested": YEARS_TO_AVERAGE,
+        },
+    ) as span:
+        try:
+            resp = httpx.get(ARCHIVE_URL, params=params, timeout=REQUEST_TIMEOUT_S)
+            span.set_attribute("http.response.status_code", resp.status_code)
+            resp.raise_for_status()
+            daily = resp.json().get("daily", {})
+            times = daily.get("time", [])
+            precip = daily.get("precipitation_sum", [])
+            if not times or not precip:
+                log.warning("Open-Meteo returned no rainfall data; using fallback %.0f mm",
+                            FALLBACK_ANNUAL_RAINFALL_MM)
+                result = _fallback()
+            else:
+                result = _summarise(times, precip, YEARS_TO_AVERAGE)
+        except (httpx.HTTPError, ValueError, KeyError) as exc:
+            # Swallowed on purpose (graceful degradation), so mark the span as an
+            # error by hand -- otherwise the fallback would be invisible in traces.
+            UPSTREAM_ERRORS.add(1, {"service": "open-meteo", "kind": type(exc).__name__})
+            span.record_exception(exc)
+            span.set_status(Status(StatusCode.ERROR, "rainfall service failed; fallback used"))
+            log.warning("Open-Meteo rainfall unavailable (%s); using fallback %.0f mm",
+                        type(exc).__name__, FALLBACK_ANNUAL_RAINFALL_MM)
             result = _fallback()
-        else:
-            result = _summarise(times, precip, YEARS_TO_AVERAGE)
-    except (httpx.HTTPError, ValueError, KeyError):
-        result = _fallback()
+        span.set_attribute("rainfall.source", result.source)
 
+    RAINFALL_LOOKUPS.add(1, {"source": result.source, "cache": "miss"})
     _CACHE[cache_key] = result
     return result

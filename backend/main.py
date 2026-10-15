@@ -8,16 +8,27 @@ The compiled React front-end (frontend/dist copied to backend/static) is served
 by this same app, so the whole system runs as one process behind one URL.
 """
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+import telemetry
 from api.routes.analyze_contour import router as analyze_router
 from api.routes.analyze_area import router as area_router
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    # Send any telemetry still buffered before the process exits.
+    telemetry.shutdown()
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="Village Pond Planning System API",
     description=(
         "Analyses terrain to plan village ponds. Two ways in: upload a contour "
@@ -41,10 +52,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Echo the request's trace id back to the caller, so a slow or failed request
+# seen in the browser can be looked up directly in the tracing backend.
+@app.middleware("http")
+async def add_trace_id_header(request: Request, call_next):
+    response = await call_next(request)
+    trace_id = telemetry.current_trace_id()
+    if trace_id:
+        response.headers["X-Trace-Id"] = trace_id
+    return response
+
+
 # Register API routes BEFORE the static mount, so explicit routes always win
 # over the catch-all that serves the single-page app.
 app.include_router(analyze_router)
 app.include_router(area_router)
+
+# OpenTelemetry: traces, metrics and logs over OTLP (a no-op unless
+# OTEL_EXPORTER_OTLP_ENDPOINT is set -- see telemetry.py).
+telemetry.setup(app)
 
 
 @app.get("/health", tags=["Health"])

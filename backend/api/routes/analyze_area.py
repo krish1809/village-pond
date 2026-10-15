@@ -12,6 +12,7 @@ All the real logic lives in elevation_api, catchment, pond_locator,
 geometry_utils, rainfall_api, and water_volume.
 """
 
+import logging
 import time
 from typing import List
 
@@ -48,7 +49,13 @@ from modules import (
     water_volume,
 )
 
+import telemetry
+from telemetry import stage
+
 router = APIRouter()
+log = logging.getLogger("village_pond.analyze_area")
+
+_OUTCOME_BY_STATUS = {422: "invalid_request", 502: "upstream_error"}
 
 
 @router.post(
@@ -71,6 +78,26 @@ async def analyze_area(
     format: str = Query("json", description="'json' (default) or 'image' for a rendered PNG map"),
 ):
     """Analyse a selected region and return ranked pond sites with water volumes."""
+    log.info(
+        "analyzeArea request received",
+        extra={"bbox": [float(v) for v in req.bbox], "num_candidates": req.num_candidates,
+               "response_format": format},
+    )
+    try:
+        response = await _run_analysis(req, format)
+    except HTTPException as exc:
+        outcome = _OUTCOME_BY_STATUS.get(exc.status_code, "error")
+        telemetry.ANALYSES.add(1, {"endpoint": "analyzeArea", "outcome": outcome})
+        level = logging.ERROR if exc.status_code >= 500 else logging.WARNING
+        log.log(level, "analyzeArea failed: %s", exc.detail,
+                extra={"status_code": exc.status_code, "outcome": outcome})
+        raise
+    telemetry.ANALYSES.add(1, {"endpoint": "analyzeArea", "outcome": "ok"})
+    return response
+
+
+async def _run_analysis(req: AnalyzeAreaRequest, format: str):
+    """The pipeline itself; every stage runs inside its own OpenTelemetry span."""
     t_start = time.time()
     notes: List[str] = []
 
@@ -82,32 +109,41 @@ async def analyze_area(
     # One request returns the whole raster for the selected area; we then run the
     # same Phase 2 hydrology pipeline (including the river/channel exclusion) on it.
     bbox = tuple(req.bbox)
-    try:
-        grid = await elevation_api.fetch_dem_grid(bbox)
-        dem_source = f"OpenTopography ({elevation_api.DEFAULT_DEMTYPE})"
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    except elevation_api.ElevationConfigError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Elevation grid error: {exc}")
+    with stage("dem_fetch", **{"dem.bbox": [float(v) for v in bbox]}) as span:
+        try:
+            grid = await elevation_api.fetch_dem_grid(bbox)
+            dem_source = f"OpenTopography ({elevation_api.DEFAULT_DEMTYPE})"
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        except elevation_api.ElevationConfigError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Elevation grid error: {exc}")
+        span.set_attribute("dem.rows", grid.meta.rows)
+        span.set_attribute("dem.cols", grid.meta.cols)
+    log.info("DEM ready: %dx%d cells, elevation %.0f-%.0f m", grid.meta.rows, grid.meta.cols,
+             float(grid.dem.min()), float(grid.dem.max()),
+             extra={"dem_rows": grid.meta.rows, "dem_cols": grid.meta.cols})
 
     notes.append(f"Elevation source: {dem_source}")
     notes.extend(grid.notes)
 
     # Contour lines from the DEM, for the map to display the terrain.
-    try:
-        contour_features = contour_lines.generate(grid.dem, grid.lon_grid, grid.lat_grid)
-    except Exception:
-        contour_features = []  # display-only; never fail the analysis over it
+    with stage("contours") as span:
+        try:
+            contour_features = contour_lines.generate(grid.dem, grid.lon_grid, grid.lat_grid)
+        except Exception:
+            contour_features = []  # display-only; never fail the analysis over it
+        span.set_attribute("contours.segments", len(contour_features))
 
     # --- Flow direction/accumulation (computed once, reused per candidate) ---
-    try:
-        flow = catchment.compute_flow(grid.dem)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Flow computation error: {exc}")
+    with stage("flow_routing", **{"grid.cells": int(grid.dem.size)}):
+        try:
+            flow = catchment.compute_flow(grid.dem)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Flow computation error: {exc}")
     notes.extend(flow.notes)
 
     # --- Existing drainage / stream network ---
@@ -117,35 +153,42 @@ async def analyze_area(
     # also excludes) so the blue reads as the actual stream network rather than a
     # fat blob. Ponds are kept off these channels (plus a small buffer).
     drainage_geojson = None
-    try:
-        chan_threshold = np.percentile(flow.flow_acc, pond_locator.CHANNEL_FLOW_ACC_PERCENTILE)
-        channel_mask = flow.flow_acc > chan_threshold
-        if channel_mask.any():
-            chan_poly = geometry_utils.catchment_polygon(channel_mask, grid.meta)
-            drainage_geojson = geometry_utils.multipolygon_to_geojson(chan_poly)
-    except Exception:
-        drainage_geojson = None  # display-only; never fail the analysis over it
+    with stage("drainage") as span:
+        try:
+            chan_threshold = np.percentile(flow.flow_acc, pond_locator.CHANNEL_FLOW_ACC_PERCENTILE)
+            channel_mask = flow.flow_acc > chan_threshold
+            span.set_attribute("drainage.channel_cells", int(channel_mask.sum()))
+            if channel_mask.any():
+                chan_poly = geometry_utils.catchment_polygon(channel_mask, grid.meta)
+                drainage_geojson = geometry_utils.multipolygon_to_geojson(chan_poly)
+        except Exception:
+            drainage_geojson = None  # display-only; never fail the analysis over it
 
     # --- Rank candidate pond sites ---
     # First pass is strict (reject sites whose pond can't be bounded). If the
     # terrain is gentle enough that nothing passes at this DEM resolution, fall
     # back to a lenient pass so we still return the best-scoring sites, flagged
     # as flat ground that would need an engineered dam, rather than nothing.
-    try:
-        ranked = pond_locator.find_candidates(grid, flow.flow_acc, num_candidates=req.num_candidates)
-        if not ranked:
-            ranked = pond_locator.find_candidates(
-                grid, flow.flow_acc, num_candidates=req.num_candidates,
-                reject_unbounded_footprint=False,
-            )
-            if ranked:
-                notes.append(
-                    "No naturally bounded pond basin was resolvable here at this resolution — "
-                    "showing the best-scoring sites, which sit on flat ground and would need an "
-                    "engineered dam/spillway rather than a simple dug basin."
+    with stage("rank_candidates", **{"candidates.requested": req.num_candidates}) as span:
+        try:
+            ranked = pond_locator.find_candidates(grid, flow.flow_acc, num_candidates=req.num_candidates)
+            lenient = False
+            if not ranked:
+                lenient = True
+                ranked = pond_locator.find_candidates(
+                    grid, flow.flow_acc, num_candidates=req.num_candidates,
+                    reject_unbounded_footprint=False,
                 )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Pond ranking error: {exc}")
+                if ranked:
+                    notes.append(
+                        "No naturally bounded pond basin was resolvable here at this resolution — "
+                        "showing the best-scoring sites, which sit on flat ground and would need an "
+                        "engineered dam/spillway rather than a simple dug basin."
+                    )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Pond ranking error: {exc}")
+        span.set_attribute("candidates.found", len(ranked))
+        span.set_attribute("candidates.lenient_fallback", lenient)
 
     if not ranked:
         raise HTTPException(
@@ -153,9 +196,13 @@ async def analyze_area(
             detail="No feasible pond site found in this area — the terrain may be uniformly "
                    "too steep. Try selecting a region with more relief (a valley or basin).",
         )
+    telemetry.CANDIDATES_FOUND.record(len(ranked))
 
     # --- Rainfall for the region centre (live, with offline fallback) ---
-    rain = rainfall_api.annual_rainfall(center_lat, center_lon)
+    with stage("rainfall") as span:
+        rain = rainfall_api.annual_rainfall(center_lat, center_lon)
+        span.set_attribute("rainfall.source", rain.source)
+        span.set_attribute("rainfall.annual_mm", rain.annual_rainfall_mm)
     notes.extend(rain.notes)
 
     # Cell area in m² — used for both the flood-fill volume and consistent with
@@ -169,49 +216,54 @@ async def analyze_area(
     results: List[AreaCandidateResult] = []
     for cand in ranked:
         notes.extend(cand.notes)
-        try:
-            catch = catchment.delineate_from_flow(flow, cand.row, cand.col)
-            catch_poly = geometry_utils.catchment_polygon(catch.mask, grid.meta)
-            # Area/perimeter are measured on the exact cell-union polygon (accurate);
-            # the boundary sent to the map is smoothed so it doesn't look blocky.
-            catch_area_m2, catch_perim_m = geometry_utils.catchment_geometry(catch_poly, cand.lon, cand.lat)
-            # Keep ALL catchment pieces (the watershed can be fragmented on flat
-            # terrain), so the drawn catchment actually contains the pond.
-            catch_geojson = geometry_utils.multipolygon_to_geojson(
-                geometry_utils.smooth_polygon(catch_poly, smooth_cell_deg)
-            )
+        with stage("candidate", **{"candidate.suitability_rank": cand.rank}) as cspan:
+            try:
+                catch = catchment.delineate_from_flow(flow, cand.row, cand.col)
+                catch_poly = geometry_utils.catchment_polygon(catch.mask, grid.meta)
+                # Area/perimeter are measured on the exact cell-union polygon (accurate);
+                # the boundary sent to the map is smoothed so it doesn't look blocky.
+                catch_area_m2, catch_perim_m = geometry_utils.catchment_geometry(catch_poly, cand.lon, cand.lat)
+                # Keep ALL catchment pieces (the watershed can be fragmented on flat
+                # terrain), so the drawn catchment actually contains the pond.
+                catch_geojson = geometry_utils.multipolygon_to_geojson(
+                    geometry_utils.smooth_polygon(catch_poly, smooth_cell_deg)
+                )
 
-            footprint_mask, footprint_info = pond_locator.compute_pond_footprint(
-                grid.dem, cand.row, cand.col
-            )
-            # A pond can only occupy the low part of the land that drains into it,
-            # so clip its footprint to the catchment. This also guarantees the
-            # pond area never exceeds the catchment area (the catchment is the
-            # water source; the pond is where that water collects).
-            footprint_mask = footprint_mask & catch.mask
-            footprint_poly = geometry_utils.catchment_polygon(footprint_mask, grid.meta)
-            footprint_area_m2, footprint_perim_m = geometry_utils.catchment_geometry(
-                footprint_poly, cand.lon, cand.lat
-            )
-            footprint_geojson = geometry_utils.polygon_to_geojson(
-                geometry_utils.smooth_polygon(footprint_poly, smooth_cell_deg)
-            )
+                footprint_mask, footprint_info = pond_locator.compute_pond_footprint(
+                    grid.dem, cand.row, cand.col
+                )
+                # A pond can only occupy the low part of the land that drains into it,
+                # so clip its footprint to the catchment. This also guarantees the
+                # pond area never exceeds the catchment area (the catchment is the
+                # water source; the pond is where that water collects).
+                footprint_mask = footprint_mask & catch.mask
+                footprint_poly = geometry_utils.catchment_polygon(footprint_mask, grid.meta)
+                footprint_area_m2, footprint_perim_m = geometry_utils.catchment_geometry(
+                    footprint_poly, cand.lon, cand.lat
+                )
+                footprint_geojson = geometry_utils.polygon_to_geojson(
+                    geometry_utils.smooth_polygon(footprint_poly, smooth_cell_deg)
+                )
 
-            vol = water_volume.compute(
-                catchment_area_m2=catch_area_m2,
-                annual_rainfall_m=rain.annual_rainfall_m,
-                dem=grid.dem,
-                footprint_mask=footprint_mask,
-                water_level_m=footprint_info["water_level_m"],
-                cell_area_m2=cell_area_m2,
-                runoff_coefficient=runoff_coeff,
-            )
+                vol = water_volume.compute(
+                    catchment_area_m2=catch_area_m2,
+                    annual_rainfall_m=rain.annual_rainfall_m,
+                    dem=grid.dem,
+                    footprint_mask=footprint_mask,
+                    water_level_m=footprint_info["water_level_m"],
+                    cell_area_m2=cell_area_m2,
+                    runoff_coefficient=runoff_coeff,
+                )
 
-            required_depth, holds_runoff, curve = water_volume.storage_curve(
-                grid.dem, cand.row, cand.col, catch.mask, cell_area_m2, vol.annual_runoff_m3,
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Analysis error for rank {cand.rank}: {exc}")
+                required_depth, holds_runoff, curve = water_volume.storage_curve(
+                    grid.dem, cand.row, cand.col, catch.mask, cell_area_m2, vol.annual_runoff_m3,
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"Analysis error for rank {cand.rank}: {exc}")
+            cspan.set_attribute("candidate.catchment_m2", round(catch_area_m2, 1))
+            cspan.set_attribute("candidate.pond_m2", round(footprint_area_m2, 1))
+            cspan.set_attribute("candidate.collectable_m3", vol.expected_collectable_m3)
+            cspan.set_attribute("candidate.limiting_factor", vol.limiting_factor)
 
         notes.extend(vol.notes)
 
@@ -266,15 +318,25 @@ async def analyze_area(
     )
     for i, r in enumerate(results, start=1):
         r.rank = i
+        telemetry.COLLECTABLE_VOLUME.record(r.water_volume.expected_collectable_m3, {"rank": i})
 
     t_elapsed = time.time() - t_start
     notes.append(f"Total processing time: {t_elapsed:.2f}s")
+    best = results[0]
+    log.info(
+        "analysis complete: %d pond sites in %.2fs; rank 1 collects %.0f m3/yr from a %.0f m2 catchment",
+        len(results), t_elapsed, best.water_volume.expected_collectable_m3, best.catchment.area_sq_m,
+        extra={"sites": len(results), "duration_s": round(t_elapsed, 3),
+               "rank1_collectable_m3": best.water_volume.expected_collectable_m3,
+               "rainfall_source": rain.source},
+    )
 
     if format == "image":
-        try:
-            png = visualization.render_area_png(grid, drainage_geojson, results, source_label=dem_source)
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Image rendering error: {exc}")
+        with stage("render_png"):
+            try:
+                png = visualization.render_area_png(grid, drainage_geojson, results, source_label=dem_source)
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"Image rendering error: {exc}")
         return Response(content=png, media_type="image/png")
 
     return AnalyzeAreaResponse(
@@ -297,9 +359,10 @@ async def analyze_area(
             dem_source=dem_source,
         ),
         metadata=AnalysisMetadata(
-            source_filename=f"open-meteo DEM for bbox {req.bbox}",
+            source_filename=f"OpenTopography DEM for bbox {req.bbox}",
             processing_notes=notes,
             grid_resolution=f"{grid.meta.rows}x{grid.meta.cols}",
             total_processing_time_s=round(t_elapsed, 3),
+            trace_id=telemetry.current_trace_id(),
         ),
     )

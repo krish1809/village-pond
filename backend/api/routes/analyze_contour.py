@@ -6,6 +6,7 @@ and builds the response. The actual terrain/hydrology logic lives in
 kml_parser, terrain_grid, catchment, pond_locator, and geometry_utils.
 """
 
+import logging
 import time
 from typing import List, Literal, Optional
 
@@ -25,7 +26,12 @@ from models.schemas import (
 )
 from modules import kml_parser, terrain_grid, catchment, pond_locator, geometry_utils, visualization
 
+import telemetry
+from telemetry import stage
+
 router = APIRouter()
+log = logging.getLogger("village_pond.analyze_contour")
+_OUTCOME_BY_STATUS = {422: "invalid_request", 502: "upstream_error"}
 
 
 @router.post(
@@ -66,6 +72,24 @@ def analyze_contour(
     ),
 ):
     """Analyze a contour map and return ranked candidate pond sites with catchment info."""
+    log.info("analyzeContour request received",
+             extra={"file_name": contour_map.filename or "uploaded_file", "grid_size": grid_size,
+                    "num_candidates": num_candidates, "response_format": format})
+    try:
+        response = _run_contour_analysis(contour_map, grid_size, num_candidates, format)
+    except HTTPException as exc:
+        outcome = _OUTCOME_BY_STATUS.get(exc.status_code, "error")
+        telemetry.ANALYSES.add(1, {"endpoint": "analyzeContour", "outcome": outcome})
+        log.log(logging.ERROR if exc.status_code >= 500 else logging.WARNING,
+                "analyzeContour failed: %s", exc.detail,
+                extra={"status_code": exc.status_code, "outcome": outcome})
+        raise
+    telemetry.ANALYSES.add(1, {"endpoint": "analyzeContour", "outcome": "ok"})
+    return response
+
+
+def _run_contour_analysis(contour_map, grid_size, num_candidates, format):
+    """The Phase 2 pipeline; each stage runs inside its own OpenTelemetry span."""
     t_start = time.time()
     filename = contour_map.filename or "uploaded_file"
     all_notes: List[str] = []
@@ -79,12 +103,14 @@ def analyze_contour(
     if not file_bytes:
         raise HTTPException(status_code=422, detail="Uploaded file is empty")
 
-    try:
-        parse_result = kml_parser.parse(file_bytes, filename)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"KML parsing error: {exc}")
+    with stage("parse_contours", **{"file.size": len(file_bytes)}) as span:
+        try:
+            parse_result = kml_parser.parse(file_bytes, filename)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"KML parsing error: {exc}")
+        span.set_attribute("contours.lines", parse_result.num_lines)
 
     all_notes.extend(parse_result.notes)
     contour_lines = parse_result.contour_lines
@@ -98,24 +124,28 @@ def analyze_contour(
         contour_interval = 0.0
 
     # --- Build the elevation grid ---
-    try:
-        grid = terrain_grid.build_grid(contour_lines, grid_size=grid_size)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Terrain grid error: {exc}")
+    with stage("build_grid", **{"grid.size": grid_size}):
+        try:
+            grid = terrain_grid.build_grid(contour_lines, grid_size=grid_size)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Terrain grid error: {exc}")
     all_notes.extend(grid.notes)
 
     # --- Flow direction/accumulation, computed once and reused for every candidate ---
-    try:
-        flow = catchment.compute_flow(grid.dem)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Flow computation error: {exc}")
+    with stage("flow_routing", **{"grid.cells": int(grid.dem.size)}):
+        try:
+            flow = catchment.compute_flow(grid.dem)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Flow computation error: {exc}")
     all_notes.extend(flow.notes)
 
     # --- Rank candidate pond sites ---
-    try:
-        ranked = pond_locator.find_candidates(grid, flow.flow_acc, num_candidates=num_candidates)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Pond ranking error: {exc}")
+    with stage("rank_candidates", **{"candidates.requested": num_candidates}) as span:
+        try:
+            ranked = pond_locator.find_candidates(grid, flow.flow_acc, num_candidates=num_candidates)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Pond ranking error: {exc}")
+        span.set_attribute("candidates.found", len(ranked))
 
     if not ranked:
         raise HTTPException(
@@ -128,22 +158,23 @@ def analyze_contour(
     candidate_results: List[PondCandidateResult] = []
     for cand in ranked:
         all_notes.extend(cand.notes)
-        try:
-            catch = catchment.delineate_from_flow(flow, cand.row, cand.col)
-            catch_poly = geometry_utils.catchment_polygon(catch.mask, grid.meta)
-            area_m2, perim_m = geometry_utils.catchment_geometry(catch_poly, cand.lon, cand.lat)
-            geojson_boundary = geometry_utils.polygon_to_geojson(catch_poly)
+        with stage("candidate", **{"candidate.rank": cand.rank}):
+            try:
+                catch = catchment.delineate_from_flow(flow, cand.row, cand.col)
+                catch_poly = geometry_utils.catchment_polygon(catch.mask, grid.meta)
+                area_m2, perim_m = geometry_utils.catchment_geometry(catch_poly, cand.lon, cand.lat)
+                geojson_boundary = geometry_utils.polygon_to_geojson(catch_poly)
 
-            footprint_mask, footprint_info = pond_locator.compute_pond_footprint(
-                grid.dem, cand.row, cand.col
-            )
-            footprint_poly = geometry_utils.catchment_polygon(footprint_mask, grid.meta)
-            footprint_area_m2, footprint_perim_m = geometry_utils.catchment_geometry(
-                footprint_poly, cand.lon, cand.lat
-            )
-            footprint_geojson = geometry_utils.polygon_to_geojson(footprint_poly)
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Catchment/geometry error for rank {cand.rank}: {exc}")
+                footprint_mask, footprint_info = pond_locator.compute_pond_footprint(
+                    grid.dem, cand.row, cand.col
+                )
+                footprint_poly = geometry_utils.catchment_polygon(footprint_mask, grid.meta)
+                footprint_area_m2, footprint_perim_m = geometry_utils.catchment_geometry(
+                    footprint_poly, cand.lon, cand.lat
+                )
+                footprint_geojson = geometry_utils.polygon_to_geojson(footprint_poly)
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"Catchment/geometry error for rank {cand.rank}: {exc}")
 
         if footprint_info["capped"]:
             all_notes.append(
@@ -182,14 +213,18 @@ def analyze_contour(
     t_elapsed = time.time() - t_start
     all_notes.append(f"Total processing time: {t_elapsed:.2f}s")
 
+    log.info("contour analysis complete: %d pond sites in %.2fs", len(candidate_results), t_elapsed,
+             extra={"sites": len(candidate_results), "duration_s": round(t_elapsed, 3)})
+
     if format == "image":
-        try:
-            png_bytes = visualization.render_analysis_png(
-                contour_lines, grid, flow, ranked, catchment, geometry_utils,
-                source_filename=filename,
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Image rendering error: {exc}")
+        with stage("render_png"):
+            try:
+                png_bytes = visualization.render_analysis_png(
+                    contour_lines, grid, flow, ranked, catchment, geometry_utils,
+                    source_filename=filename,
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"Image rendering error: {exc}")
         return Response(content=png_bytes, media_type="image/png")
 
     return AnalyzeContourResponse(
@@ -205,5 +240,6 @@ def analyze_contour(
             processing_notes=all_notes,
             grid_resolution=f"{grid.meta.rows}x{grid.meta.cols}",
             total_processing_time_s=round(t_elapsed, 3),
+            trace_id=telemetry.current_trace_id(),
         ),
     )

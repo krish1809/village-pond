@@ -19,13 +19,18 @@ can parse it with numpy and need NO native GDAL/rasterio dependency (the lab
 containers don't have them).
 """
 
+import logging
 import os
 from typing import Optional, Tuple
 
 import httpx
 import numpy as np
+from opentelemetry import trace
 
 from modules.terrain_grid import GridResult, GridMeta, compute_slope
+from telemetry import DEM_REQUESTS, UPSTREAM_ERRORS, tracer
+
+log = logging.getLogger("village_pond.elevation_api")
 
 GLOBALDEM_URL = "https://portal.opentopography.org/API/globaldem"
 
@@ -197,12 +202,16 @@ async def fetch_dem_grid(
 
     cache_key = (tuple(round(v, 5) for v in bbox), demtype)
     if cache_key in _CACHE:
+        DEM_REQUESTS.add(1, {"cache": "hit"})
+        trace.get_current_span().set_attribute("dem.cache_hit", True)
         cached = _CACHE[cache_key]
         return GridResult(
             dem=cached.dem, slope=cached.slope,
             lon_grid=cached.lon_grid, lat_grid=cached.lat_grid,
             meta=cached.meta, notes=list(cached.notes) + ["(DEM served from cache)"],
         )
+    DEM_REQUESTS.add(1, {"cache": "miss"})
+    trace.get_current_span().set_attribute("dem.cache_hit", False)
 
     lon_min, lat_min, lon_max, lat_max = bbox
     params = {
@@ -213,27 +222,50 @@ async def fetch_dem_grid(
         "API_Key": key,
     }
 
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(GLOBALDEM_URL, params=params, timeout=REQUEST_TIMEOUT_S)
-    except httpx.HTTPError as exc:
-        raise RuntimeError(f"Could not reach the OpenTopography DEM service: {exc}") from exc
+    # Client span for the external call. Attributes are set by hand rather than
+    # via httpx auto-instrumentation because the query string carries the API
+    # key -- only the host, path and DEM type are recorded.
+    with tracer.start_as_current_span(
+        "GET opentopography globaldem",
+        kind=trace.SpanKind.CLIENT,
+        attributes={
+            "http.request.method": "GET",
+            "server.address": "portal.opentopography.org",
+            "url.path": "/API/globaldem",
+            "dem.type": demtype,
+            "peer.service": "opentopography",
+        },
+    ) as span:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(GLOBALDEM_URL, params=params, timeout=REQUEST_TIMEOUT_S)
+        except httpx.HTTPError as exc:
+            UPSTREAM_ERRORS.add(1, {"service": "opentopography", "kind": "unreachable"})
+            log.error("OpenTopography unreachable: %s", type(exc).__name__)
+            raise RuntimeError(f"Could not reach the OpenTopography DEM service: {exc}") from exc
+        span.set_attribute("http.response.status_code", resp.status_code)
+        span.set_attribute("http.response.body.size", len(resp.content))
 
-    if resp.status_code == 401:
-        body = (resp.text or "").lower()
-        if "rate limit" in body or "maximum" in body or "calls" in body:
+        if resp.status_code == 401:
+            body = (resp.text or "").lower()
+            if "rate limit" in body or "maximum" in body or "calls" in body:
+                UPSTREAM_ERRORS.add(1, {"service": "opentopography", "kind": "rate_limit"})
+                log.warning("OpenTopography daily request limit reached (50/24h)")
+                raise RuntimeError(
+                    "OpenTopography's free daily limit (50 DEM requests per 24 hours) has been "
+                    "reached. It resets after 24 hours; until then, areas already analysed still "
+                    "work from the cache."
+                )
+            UPSTREAM_ERRORS.add(1, {"service": "opentopography", "kind": "auth"})
+            raise ElevationConfigError("OpenTopography rejected the API key (401). Check OPENTOPOGRAPHY_API_KEY.")
+        if resp.status_code == 400:
+            UPSTREAM_ERRORS.add(1, {"service": "opentopography", "kind": "bad_request"})
+            raise ValueError(f"OpenTopography rejected the request: {resp.text[:200]}")
+        if resp.status_code != 200:
+            UPSTREAM_ERRORS.add(1, {"service": "opentopography", "kind": f"http_{resp.status_code}"})
             raise RuntimeError(
-                "OpenTopography's free daily limit (50 DEM requests per 24 hours) has been "
-                "reached. It resets after 24 hours; until then, areas already analysed still "
-                "work from the cache."
+                f"OpenTopography returned HTTP {resp.status_code}: {resp.text[:200]}"
             )
-        raise ElevationConfigError("OpenTopography rejected the API key (401). Check OPENTOPOGRAPHY_API_KEY.")
-    if resp.status_code == 400:
-        raise ValueError(f"OpenTopography rejected the request: {resp.text[:200]}")
-    if resp.status_code != 200:
-        raise RuntimeError(
-            f"OpenTopography returned HTTP {resp.status_code}: {resp.text[:200]}"
-        )
 
     try:
         dem, meta = parse_aaigrid(resp.text)

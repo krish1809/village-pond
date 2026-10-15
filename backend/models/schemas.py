@@ -96,6 +96,9 @@ class AnalysisMetadata(BaseModel):
     processing_notes: List[str] = Field(default_factory=list)
     grid_resolution: Optional[str] = None
     total_processing_time_s: Optional[float] = None
+    trace_id: Optional[str] = Field(
+        default=None, description="OpenTelemetry trace id of this request (when telemetry is on)"
+    )
 
 
 class AnalyzeContourResponse(BaseModel):

@@ -101,6 +101,11 @@ export default function ResultsPanel({ results, selectedRank, onSelectRank }) {
         {area_summary.dem_source && (
           <p className="muted small">Elevation source: {area_summary.dem_source}</p>
         )}
+        {metadata.trace_id && (
+          <p className="muted small trace-id" title="OpenTelemetry trace id — search it in the observability UI">
+            Trace ID: <code>{metadata.trace_id}</code>
+          </p>
+        )}
       </section>
 
       <h3 className="section-title">Suggested pond sites ({candidates.length})</h3>
